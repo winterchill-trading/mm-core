@@ -152,3 +152,66 @@ let%expect_test "action rate grace and cooldown: printed only when not the defau
         "action_rate_cooldown_ms must be positive"))))
     |}]
 ;;
+
+let%expect_test "durations print as spans and read from spans or integer milliseconds" =
+  let durations (t : Params.t) =
+    print_s
+      [%message
+        ""
+          ~requote_interval_ms:(t.requote_interval_ms : Time_ns.Span.t)
+          ~order_ttl_ms:(t.order_ttl_ms : Time_ns.Span.t)
+          ~max_data_age_ms:(t.max_data_age_ms : Time_ns.Span.t)
+          ~action_rate_grace_ms:(t.action_rate_grace_ms : Time_ns.Span.t)
+          ~action_rate_cooldown_ms:(t.action_rate_cooldown_ms : Time_ns.Span.t option)]
+  in
+  durations Params.btc;
+  [%expect
+    {|
+    ((requote_interval_ms 1s) (order_ttl_ms 1m) (max_data_age_ms 5s)
+     (action_rate_grace_ms 5s) (action_rate_cooldown_ms ()))
+    |}];
+  (* a params file written before spans: every duration an integer of milliseconds *)
+  let with_fields fields =
+    match Params.sexp_of_t Params.btc with
+    | List existing ->
+      let names = List.map fields ~f:(fun (name, _) -> name) in
+      Sexp.List
+        (List.filter existing ~f:(function
+           | List (Atom name :: _) -> not (List.mem names name ~equal:String.equal)
+           | _ -> true)
+         @ List.map fields ~f:(fun (name, value) ->
+           Sexp.List [ Atom name; Sexp.of_string value ]))
+    | atom -> atom
+  in
+  let old =
+    Params.t_of_sexp
+      (with_fields
+         [ "requote_interval_ms", "250"
+         ; "order_ttl_ms", "60000"
+         ; "max_data_age_ms", "1_500"
+         ; "action_rate_grace_ms", "0"
+         ; "action_rate_cooldown_ms", "30000"
+         ])
+  in
+  durations old;
+  [%expect
+    {|
+    ((requote_interval_ms 250ms) (order_ttl_ms 1m) (max_data_age_ms 1.5s)
+     (action_rate_grace_ms 0s) (action_rate_cooldown_ms (30s)))
+    |}];
+  let spans =
+    Params.t_of_sexp
+      (with_fields
+         [ "requote_interval_ms", "250ms"
+         ; "order_ttl_ms", "1m"
+         ; "max_data_age_ms", "1.5s"
+         ; "action_rate_grace_ms", "0s"
+         ; "action_rate_cooldown_ms", "30s"
+         ])
+  in
+  print_s [%sexp (Params.equal old spans : bool)];
+  [%expect {| true |}];
+  (* printing then reading back is the identity *)
+  print_s [%sexp (Params.equal old (Params.t_of_sexp (Params.sexp_of_t old)) : bool)];
+  [%expect {| true |}]
+;;
