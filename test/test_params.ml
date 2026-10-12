@@ -71,3 +71,44 @@ let%expect_test "a params sexp without max_actions_per_sec takes the default" =
   print_s [%sexp ((Params.t_of_sexp sexp).max_actions_per_sec : int)];
   [%expect {| 100 |}]
 ;;
+
+let%expect_test "NaN or infinity in any float field fails validation" =
+  let setters =
+    [ ("base_half_spread_bps", fun t x -> { t with Params.base_half_spread_bps = x })
+    ; ("level_spacing_bps", fun t x -> { t with Params.level_spacing_bps = x })
+    ; ("skew_bps", fun t x -> { t with Params.skew_bps = x })
+    ; ("requote_threshold_bps", fun t x -> { t with Params.requote_threshold_bps = x })
+    ; ("gamma", fun t x -> { t with Params.gamma = x })
+    ; ("max_vol_bps", fun t x -> { t with Params.max_vol_bps = x })
+    ; ("flatten_slippage_bps", fun t x -> { t with Params.flatten_slippage_bps = x })
+    ]
+  in
+  List.iter setters ~f:(fun (name, set) ->
+    List.iter [ Float.nan; Float.infinity ] ~f:(fun x ->
+      match Params.validate (set Params.btc x) with
+      | Ok _ -> printf "%s = %f accepted\n" name x
+      | Error error ->
+        let errors =
+          match Error.sexp_of_t error with
+          | List [ _; List [ _; List errors ] ] -> List.map errors ~f:Sexp.to_string
+          | sexp -> [ Sexp.to_string sexp ]
+        in
+        printf "%s = %f: %s\n" name x (String.concat ~sep:"; " errors)));
+  [%expect
+    {|
+    base_half_spread_bps = nan: "base_half_spread_bps must be finite"; "base_half_spread_bps must be positive"
+    base_half_spread_bps = inf: "base_half_spread_bps must be finite"
+    level_spacing_bps = nan: "level_spacing_bps must be finite"; "level_spacing_bps must be non-negative"
+    level_spacing_bps = inf: "level_spacing_bps must be finite"
+    skew_bps = nan: "skew_bps must be finite"; "skew_bps must be non-negative"
+    skew_bps = inf: "skew_bps must be finite"
+    requote_threshold_bps = nan: "requote_threshold_bps must be finite"; "requote_threshold_bps must be non-negative"
+    requote_threshold_bps = inf: "requote_threshold_bps must be finite"
+    gamma = nan: "gamma must be finite"; "gamma must be non-negative"
+    gamma = inf: "gamma must be finite"
+    max_vol_bps = nan: "max_vol_bps must be finite"; "max_vol_bps must be non-negative"
+    max_vol_bps = inf: "max_vol_bps must be finite"
+    flatten_slippage_bps = nan: "flatten_slippage_bps must be finite"; "flatten_slippage_bps must be positive"
+    flatten_slippage_bps = inf: "flatten_slippage_bps must be finite"
+    |}]
+;;
