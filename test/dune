@@ -1,0 +1,8 @@
+(library
+ (name mm_core_test)
+ (inline_tests
+  (flags
+   (:standard -source-tree-root .)))
+ (libraries core async exchange-core mm-core)
+ (preprocess
+  (pps ppx_jane)))
