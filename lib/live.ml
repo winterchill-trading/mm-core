@@ -2,8 +2,6 @@ open! Core
 open! Async
 open Exchange_core
 
-let now_ns () = Time_ns.to_int_ns_since_epoch (Time_ns.now ())
-
 module Report = struct
   type t =
     { elapsed : Time_ns.Span.t
@@ -84,7 +82,7 @@ let describe_reject (reason : Reject_reason.t) =
   | Order_not_found -> Sexp.to_string [%sexp (reason : Reject_reason.t)]
 ;;
 
-let stop_signal ?run_for () =
+let stop_signal ?(time_source = Time_source.wall_clock ()) ?run_for () =
   let stop = Ivar.create () in
   Signal.handle [ Signal.int; Signal.term ] ~f:(fun signal ->
     if Ivar.is_full stop
@@ -95,7 +93,7 @@ let stop_signal ?run_for () =
       Log.Global.info_s [%message "signal received, shutting down" (signal : Signal.t)];
       Ivar.fill_if_empty stop ()));
   Option.iter run_for ~f:(fun span ->
-    upon (Clock_ns.after span) (Ivar.fill_if_empty stop));
+    upon (Time_source.after time_source span) (Ivar.fill_if_empty stop));
   Ivar.read stop
 ;;
 
@@ -117,6 +115,7 @@ module Make (V : Venue.S) = struct
   type t =
     { config : Config.t
     ; venue : V.t
+    ; time_source : Time_source.t
     ; sequencer : unit Throttle.Sequencer.t
     ; started_at : Time_ns.t
     ; seen_trades : Trade_id.Hash_set.t
@@ -140,6 +139,8 @@ module Make (V : Venue.S) = struct
   let params t = t.config.params
   let symbol t = (params t).symbol
   let strategy t = t.strategy
+  let now t = Time_source.now t.time_source
+  let now_ns t = Time_ns.to_int_ns_since_epoch (now t)
   let usd = Report.usd
 
   let report t =
@@ -151,7 +152,7 @@ module Make (V : Venue.S) = struct
     in
     let realized_pnl = Inventory.realized_pnl inventory in
     let fees = Inventory.fees inventory in
-    { Report.elapsed = Time_ns.diff (Time_ns.now ()) t.started_at
+    { Report.elapsed = Time_ns.diff (now t) t.started_at
     ; fills = Hash_set.length t.seen_trades
     ; maker_fills = t.maker_fills
     ; volume = t.volume
@@ -269,7 +270,7 @@ module Make (V : Venue.S) = struct
     then return ()
     else (
       let mode_before = Strategy.mode t.strategy in
-      let strategy, plan = Strategy.tick t.strategy ~now:(now_ns ()) in
+      let strategy, plan = Strategy.tick t.strategy ~now:(now_ns t) in
       t.strategy <- strategy;
       let mode = Strategy.mode strategy in
       if not (Strategy.Mode.equal mode mode_before)
@@ -387,7 +388,7 @@ module Make (V : Venue.S) = struct
 
   (* {2 Lifecycle} *)
 
-  let start venue (config : Config.t) =
+  let start ?(time_source = Time_source.wall_clock ()) venue (config : Config.t) =
     let params = config.params in
     match Params.validate params with
     | Error _ as error -> return error
@@ -395,8 +396,9 @@ module Make (V : Venue.S) = struct
       let t =
         { config
         ; venue
+        ; time_source
         ; sequencer = Throttle.Sequencer.create ~continue_on_error:true ()
-        ; started_at = Time_ns.now ()
+        ; started_at = Time_source.now time_source
         ; seen_trades = Trade_id.Hash_set.create ()
         ; timers_stop = Ivar.create ()
         ; stopped = Ivar.create ()
@@ -429,15 +431,17 @@ module Make (V : Venue.S) = struct
       let%bind books = V.books venue params.symbol in
       don't_wait_for (Pipe.iter_without_pushback books ~f:(on_book t));
       let stop = Ivar.read t.timers_stop in
-      Clock_ns.every
+      Time_source.every
         ~stop
         ~continue_on_error:true
+        time_source
         (Time_ns.Span.of_int_ms params.requote_interval_ms)
         (fun () -> request_sync t);
-      Clock_ns.every
-        ~start:(Clock_ns.after config.summary_interval)
+      Time_source.every
+        ~start:(Time_source.after time_source config.summary_interval)
         ~stop
         ~continue_on_error:true
+        time_source
         config.summary_interval
         (fun () -> log_summary t);
       return (Ok t)
@@ -483,14 +487,19 @@ module Make (V : Venue.S) = struct
       let%bind () = enqueue t ~name:"shutdown" (fun () -> cancel_all t) in
       let%bind () = sync t in
       (* Let fills and cancel confirmations for the last orders arrive. *)
-      let%bind () = Clock_ns.after (Time_ns.Span.of_int_ms 250) in
+      let%bind () = Time_source.after t.time_source (Time_ns.Span.of_int_ms 250) in
       let%bind () = V.close t.venue in
       let report = report t in
       Ivar.fill_if_empty t.stopped report;
       return report)
   ;;
 
-  let first_mid ?(timeout = Time_ns.Span.of_int_sec 10) venue symbol =
+  let first_mid
+    ?(time_source = Time_source.wall_clock ())
+    ?(timeout = Time_ns.Span.of_int_sec 10)
+    venue
+    symbol
+    =
     let%bind books = V.books venue symbol in
     let rec next () =
       match%bind Pipe.read books with
@@ -502,7 +511,7 @@ module Make (V : Venue.S) = struct
          | _ -> next ())
     in
     let%map result =
-      match%map Clock_ns.with_timeout timeout (next ()) with
+      match%map Time_source.with_timeout time_source timeout (next ()) with
       | `Result result -> result
       | `Timeout ->
         Or_error.error_s
@@ -512,8 +521,8 @@ module Make (V : Venue.S) = struct
     result
   ;;
 
-  let run venue config ~stop:stop_signal =
-    match%bind start venue config with
+  let run ?time_source venue config ~stop:stop_signal =
+    match%bind start ?time_source venue config with
     | Error _ as error ->
       let%map () = V.close venue in
       error
@@ -523,18 +532,18 @@ module Make (V : Venue.S) = struct
       Ok report
   ;;
 
-  let connect_and_run config ~symbol ~params ~summary_interval ~stop =
+  let connect_and_run ?time_source config ~symbol ~params ~summary_interval ~stop =
     let%bind.Deferred.Or_error venue = V.connect config in
     let prepare =
       let open Deferred.Or_error.Let_syntax in
       let%bind instrument = V.instrument venue symbol in
-      let%bind mid = first_mid venue symbol in
+      let%bind mid = first_mid ?time_source venue symbol in
       Deferred.return (Or_error.try_with_join (fun () -> params instrument ~mid))
     in
     match%bind prepare with
     | Error _ as error ->
       let%map () = V.close venue in
       error
-    | Ok params -> run venue { Config.params; summary_interval } ~stop
+    | Ok params -> run ?time_source venue { Config.params; summary_interval } ~stop
   ;;
 end

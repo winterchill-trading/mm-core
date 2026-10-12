@@ -55,17 +55,25 @@ end
 (** One line for a rejection, as counted in [Report.rejections]. *)
 val describe_reject : Reject_reason.t -> string
 
-(** Becomes determined on the first SIGINT or SIGTERM, or after [run_for]. A second signal
-    logs and exits the process with code 130 at once. Call it once per process. *)
-val stop_signal : ?run_for:Time_ns.Span.t -> unit -> unit Deferred.t
+(** Becomes determined on the first SIGINT or SIGTERM, or after [run_for] (measured on
+    [time_source], default the wall clock). A second signal logs and exits the process
+    with code 130 at once. Call it once per process. *)
+val stop_signal
+  :  ?time_source:Time_source.t
+  -> ?run_for:Time_ns.Span.t
+  -> unit
+  -> unit Deferred.t
 
+(** Every function taking [?time_source] reads the time and runs its timers (polls,
+    summaries, the shutdown grace period, timeouts) on it; the default is the wall clock.
+    A synthetic [Time_source.create] makes a run deterministic in tests. *)
 module Make (V : Venue.S) : sig
   type t
 
   (** Takes an initial open orders and account snapshot, subscribes to the book and
       account feeds of [venue] and starts quoting. The loop owns [venue] from here on:
       [stop] closes it. *)
-  val start : V.t -> Config.t -> t Or_error.t Deferred.t
+  val start : ?time_source:Time_source.t -> V.t -> Config.t -> t Or_error.t Deferred.t
 
   (** Stops quoting: waits for the step in flight, cancels every resting order on the
       symbol (re-reading open orders until none are left, up to a few attempts), takes a
@@ -77,18 +85,25 @@ module Make (V : Venue.S) : sig
 
   (** The mid of the first two-sided book of [symbol] (default timeout 10s). *)
   val first_mid
-    :  ?timeout:Time_ns.Span.t
+    :  ?time_source:Time_source.t
+    -> ?timeout:Time_ns.Span.t
     -> V.t
     -> Symbol.t
     -> Price.t Or_error.t Deferred.t
 
   (** [start], wait for [stop] (a deferred), then [stop]. *)
-  val run : V.t -> Config.t -> stop:unit Deferred.t -> Report.t Or_error.t Deferred.t
+  val run
+    :  ?time_source:Time_source.t
+    -> V.t
+    -> Config.t
+    -> stop:unit Deferred.t
+    -> Report.t Or_error.t Deferred.t
 
   (** Connects, fetches the instrument and its first mid, builds the parameters with
       [params], then {!run}. Closes the venue on every path. *)
   val connect_and_run
-    :  V.config
+    :  ?time_source:Time_source.t
+    -> V.config
     -> symbol:Symbol.t
     -> params:(Instrument.t -> mid:Price.t -> Params.t Or_error.t)
     -> summary_interval:Time_ns.Span.t
