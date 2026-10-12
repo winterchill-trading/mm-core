@@ -219,3 +219,68 @@ let%expect_test "on_resync hooks run on every reconnect, after the loop's own re
   let%bind (_ : Live.Report.t) = stopped in
   return ()
 ;;
+
+let%expect_test "connect_and_start ~on_venue attaches observers before the loop starts" =
+  Log.Global.set_output [];
+  let ts = Time_source.create ~now:(Time_ns.of_int_ns_since_epoch 0) () in
+  let attached = ref None in
+  let on_venue venue =
+    print_s [%message "on_venue" ~orders:(List.length (Memory_venue.orders venue) : int)];
+    Memory_venue.on_reconnect venue ~f:(fun () -> print_endline "observer resync");
+    attached := Some venue
+  in
+  let started =
+    Live_memory.connect_and_start
+      ~time_source:(Time_source.read_only ts)
+      ~on_venue
+      Memory_venue.Bugs.none
+      ~symbol:Params.btc.symbol
+      ~params:(fun _ ~mid:_ -> Ok Params.btc)
+      ~summary_interval:(Time_ns.Span.of_int_sec 60)
+  in
+  let%bind () = Scheduler.yield_until_no_jobs_remain () in
+  [%expect {| (on_venue (orders 0)) |}];
+  let venue = Option.value_exn !attached in
+  Memory_venue.push_book
+    venue
+    { symbol = Params.btc.symbol
+    ; time = 0
+    ; bids = [ { px = Price.of_int 99_990; sz = Size.one; n = 1 } ]
+    ; asks = [ { px = Price.of_int 100_010; sz = Size.one; n = 1 } ]
+    };
+  let%bind live = started >>| ok_exn in
+  Live_memory.on_resync live ~f:(fun () -> print_endline "loop resync");
+  Memory_venue.simulate_reconnect venue;
+  [%expect {|
+    observer resync
+    loop resync
+    |}];
+  let stopped = Live_memory.stop live in
+  let%bind () =
+    Time_source.advance_by_alarms ts ~to_:(Time_ns.of_int_ns_since_epoch 5_000_000_000)
+  in
+  let%bind (_ : Live.Report.t) = stopped in
+  return ()
+;;
+
+let%expect_test "an on_venue exception is the error and closes the venue" =
+  Log.Global.set_output [];
+  let attached = ref None in
+  let%bind started =
+    Live_memory.connect_and_start
+      ~on_venue:(fun venue ->
+        attached := Some venue;
+        failwith "observer failed")
+      Memory_venue.Bugs.none
+      ~symbol:Params.btc.symbol
+      ~params:(fun _ ~mid:_ -> Ok Params.btc)
+      ~summary_interval:(Time_ns.Span.of_int_sec 60)
+  in
+  print_s
+    [%message
+      ""
+        ~result:(Result.map started ~f:(fun _ -> ()) : unit Or_error.t)
+        ~closed:(Memory_venue.is_closed (Option.value_exn !attached) : bool)];
+  [%expect {| ((result (Error (Failure "observer failed"))) (closed true)) |}];
+  return ()
+;;
