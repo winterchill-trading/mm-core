@@ -1,0 +1,10 @@
+(library
+ (name mm_core_replay_test)
+ (inline_tests
+  (deps
+   (source_tree fixtures))
+  (flags
+   (:standard -source-tree-root .)))
+ (libraries core async exchange-core market-data mm-core mm-core-replay)
+ (preprocess
+  (pps ppx_jane)))
