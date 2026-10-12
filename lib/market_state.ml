@@ -12,16 +12,20 @@ type t =
   }
 [@@deriving sexp_of]
 
+let alpha ~vol_window = 2. /. Float.of_int (Int.max 1 vol_window + 1)
+
 let create ~vol_window =
   { book = None
   ; mid = None
   ; microprice = None
   ; var = 0.
   ; vol_samples = 0
-  ; alpha = 2. /. Float.of_int (Int.max 1 vol_window + 1)
+  ; alpha = alpha ~vol_window
   ; updated_at = None
   }
 ;;
+
+let with_vol_window t ~vol_window = { t with alpha = alpha ~vol_window }
 
 let mid_and_micro (book : L2.t) =
   match L2.best_bid book, L2.best_ask book with

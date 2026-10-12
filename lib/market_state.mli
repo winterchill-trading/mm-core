@@ -15,6 +15,10 @@ type t [@@deriving sexp_of]
 
 val create : vol_window:int -> t
 
+(** Changes the EWMA span; the estimate so far is kept and smoothed with the new span from
+    the next update on. *)
+val with_vol_window : t -> vol_window:int -> t
+
 (** Applies a book snapshot. One-sided or empty books clear the mid and microprice but do
     not update the volatility estimate. The book's [time] becomes [updated_at]. Books for
     other symbols are not filtered here. *)
