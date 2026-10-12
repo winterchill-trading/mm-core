@@ -3,6 +3,23 @@ open! Async
 open Exchange_core
 
 module Report = struct
+  module Gc_counts = struct
+    type t =
+      { minor_collections : int
+      ; major_collections : int
+      ; heap_words : int
+      }
+    [@@deriving sexp_of]
+
+    let since (start : Gc.Stat.t) =
+      let now = Gc.quick_stat () in
+      { minor_collections = now.minor_collections - start.minor_collections
+      ; major_collections = now.major_collections - start.major_collections
+      ; heap_words = now.heap_words
+      }
+    ;;
+  end
+
   type t =
     { elapsed : Time_ns.Span.t
     ; fills : int
@@ -22,6 +39,7 @@ module Report = struct
     ; orders_cancelled : int
     ; reconnects : int
     ; mode : Strategy.Mode.t
+    ; gc : Gc_counts.t
     }
   [@@deriving sexp_of]
 
@@ -50,6 +68,11 @@ module Report = struct
       @ List.map t.rejections ~f:(fun (msg, n) -> sprintf "  rejected %4d x %s" n msg)
       @ [ sprintf "reconnects       %d" t.reconnects
         ; sprintf "mode             %s" (Sexp.to_string (Strategy.Mode.sexp_of_t t.mode))
+        ; sprintf
+            "gc               %d minor, %d major collections, heap %d words"
+            t.gc.minor_collections
+            t.gc.major_collections
+            t.gc.heap_words
         ]
     in
     String.concat ~sep:"\n" lines
@@ -118,6 +141,7 @@ module Make (V : Venue.S) = struct
     ; time_source : Time_source.t
     ; sequencer : unit Throttle.Sequencer.t
     ; started_at : Time_ns.t
+    ; gc_at_start : Gc.Stat.t
     ; seen_trades : Trade_id.Hash_set.t
     ; timers_stop : unit Ivar.t
     ; mutable polls_stop : unit Ivar.t
@@ -176,6 +200,7 @@ module Make (V : Venue.S) = struct
     ; orders_cancelled = t.orders_cancelled
     ; reconnects = t.reconnects
     ; mode = Strategy.mode t.strategy
+    ; gc = Report.Gc_counts.since t.gc_at_start
     }
   ;;
 
@@ -437,6 +462,7 @@ module Make (V : Venue.S) = struct
         ; time_source
         ; sequencer = Throttle.Sequencer.create ~continue_on_error:true ()
         ; started_at = Time_source.now time_source
+        ; gc_at_start = Gc.quick_stat ()
         ; seen_trades = Trade_id.Hash_set.create ()
         ; timers_stop = Ivar.create ()
         ; polls_stop = Ivar.create ()

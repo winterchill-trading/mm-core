@@ -18,6 +18,17 @@ open! Async
 open Exchange_core
 
 module Report : sig
+  (** Garbage collector counters of the process, from [Gc.quick_stat] (cheap: no heap
+      walk). Collections are counted since the loop started; heap sizes are current. *)
+  module Gc_counts : sig
+    type t =
+      { minor_collections : int
+      ; major_collections : int
+      ; heap_words : int (** major heap size *)
+      }
+    [@@deriving sexp_of]
+  end
+
   type t =
     { elapsed : Time_ns.Span.t
     ; fills : int
@@ -37,6 +48,7 @@ module Report : sig
     ; orders_cancelled : int (** cancellations reported by order updates *)
     ; reconnects : int
     ; mode : Strategy.Mode.t
+    ; gc : Gc_counts.t
     }
   [@@deriving sexp_of]
 
