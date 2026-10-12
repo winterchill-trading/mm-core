@@ -569,7 +569,7 @@ module Make (V : Venue.S) = struct
       Ok report
   ;;
 
-  let connect_and_run ?time_source config ~symbol ~params ~summary_interval ~stop =
+  let connect_and_start ?time_source config ~symbol ~params ~summary_interval =
     let%bind.Deferred.Or_error venue = V.connect config in
     let prepare =
       let open Deferred.Or_error.Let_syntax in
@@ -577,10 +577,33 @@ module Make (V : Venue.S) = struct
       let%bind mid = first_mid ?time_source venue symbol in
       Deferred.return (Or_error.try_with_join (fun () -> params instrument ~mid))
     in
-    match%bind prepare with
+    let%bind started =
+      match%bind prepare with
+      | Error _ as error -> return error
+      | Ok params -> start ?time_source venue { Config.params; summary_interval }
+    in
+    match started with
+    | Ok _ as ok -> return ok
     | Error _ as error ->
       let%map () = V.close venue in
       error
-    | Ok params -> run ?time_source venue { Config.params; summary_interval } ~stop
+  ;;
+
+  let connect_and_run
+    ?time_source
+    config
+    ~symbol
+    ~params
+    ~summary_interval
+    ~stop:stop_signal
+    =
+    match%bind
+      connect_and_start ?time_source config ~symbol ~params ~summary_interval
+    with
+    | Error _ as error -> return error
+    | Ok t ->
+      let%bind () = stop_signal in
+      let%map report = stop t in
+      Ok report
   ;;
 end

@@ -115,7 +115,17 @@ module Make (V : Venue.S) : sig
     -> Report.t Or_error.t Deferred.t
 
   (** Connects, fetches the instrument and its first mid, builds the parameters with
-      [params], then {!run}. Closes the venue on every path. *)
+      [params], then {!start}. Returns the running loop: a handle for {!update_params},
+      {!report}, {!tick_to_order} and {!stop}. Closes the venue on every error path. *)
+  val connect_and_start
+    :  ?time_source:Time_source.t
+    -> V.config
+    -> symbol:Symbol.t
+    -> params:(Instrument.t -> mid:Price.t -> Params.t Or_error.t)
+    -> summary_interval:Time_ns.Span.t
+    -> t Or_error.t Deferred.t
+
+  (** {!connect_and_start}, wait for [stop], then {!stop}. Closes the venue on every path. *)
   val connect_and_run
     :  ?time_source:Time_source.t
     -> V.config
