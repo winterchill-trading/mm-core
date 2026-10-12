@@ -118,6 +118,10 @@ Live_hl.connect_and_run config ~symbol
   report. `stop_signal` resolves on SIGINT/SIGTERM or after `run_for`; a second signal
   exits with code 130 at once. The position is not flattened on exit.
 - The report's cancellation count comes from `Cancelled` order updates.
+- The report's `gc` field (and a `gc` line in `to_string_hum`) holds the minor and major
+  collections since the loop started and the current major heap size in words, from
+  `Gc.quick_stat` (no heap walk). OCaml 5's `top_heap_words` is not reported: it reads
+  below `heap_words`.
 - `tick_to_order` reports p50, p99 and max of the time from a book update's arrival to
   the send of the plan it led to (sequencer waits included).
 - `start` and `connect_and_start` return the running loop; `update_params`, `report`,
