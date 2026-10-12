@@ -38,6 +38,12 @@ type t =
   ; max_actions_per_sec : int
   (** kill switch: more cancels and places than this in the last second (absent in a
       sexp: 100) *)
+  ; soft_max_position : Size.t option
+  (** beyond this absolute position the side that grows it is pulled, instead of halting
+      as at [max_position] (absent in a sexp: none) *)
+  ; bump_budget : Size.t
+  (** how much, in total over a run, fills may take the position past [soft_max_position]
+      while the growing side keeps quoting (absent in a sexp: 0) *)
   }
 [@@deriving sexp, compare, equal]
 

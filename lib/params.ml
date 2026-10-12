@@ -23,6 +23,8 @@ type t =
   ; max_data_age_ms : int
   ; flatten_slippage_bps : float
   ; max_actions_per_sec : int [@default 100]
+  ; soft_max_position : Size.t option [@default None]
+  ; bump_budget : Size.t [@default Size.zero]
   }
 [@@deriving sexp, compare, equal]
 
@@ -48,6 +50,8 @@ let btc =
   ; max_data_age_ms = 5_000
   ; flatten_slippage_bps = 50.
   ; max_actions_per_sec = 100
+  ; soft_max_position = None
+  ; bump_budget = Size.zero
   }
 ;;
 
@@ -119,6 +123,8 @@ let validate t =
       ; max_data_age_ms
       ; flatten_slippage_bps
       ; max_actions_per_sec
+      ; soft_max_position
+      ; bump_budget
       }
     =
     t
@@ -158,6 +164,10 @@ let validate t =
       ; max_data_age_ms > 0, "max_data_age_ms must be positive"
       ; Float.(flatten_slippage_bps > 0.), "flatten_slippage_bps must be positive"
       ; max_actions_per_sec > 0, "max_actions_per_sec must be positive"
+      ; ( Option.for_all soft_max_position ~f:(fun soft ->
+            Size.is_positive soft && Size.(soft <= max_position))
+        , "soft_max_position must be in (0, max_position]" )
+      ; not (Size.is_negative bump_budget), "bump_budget must be non-negative"
       ]
   in
   match List.filter_map checks ~f:(fun (ok, msg) -> Option.some_if (not ok) msg) with
