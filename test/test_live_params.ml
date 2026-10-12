@@ -1,0 +1,91 @@
+open! Core
+open! Async
+open Exchange_core
+open Mm_core
+module Live_memory = Live.Make (Memory_venue)
+
+let print_orders venue =
+  Live_helpers.print_orders (Memory_venue.orders venue);
+  printf "cancel_all calls: %d\n" (Memory_venue.cancel_all_calls venue)
+;;
+
+let%expect_test "update_params moves quotes on the next requote without a cancel-all" =
+  Log.Global.set_output [];
+  let ts = Time_source.create ~now:(Time_ns.of_int_ns_since_epoch 0) () in
+  let time_source = Time_source.read_only ts in
+  let venue = Memory_venue.create ~time_source Memory_venue.Bugs.none in
+  let params = { Params.btc with requote_interval_ms = 100 } in
+  let%bind live =
+    Live_memory.start
+      ~time_source
+      venue
+      { params; summary_interval = Time_ns.Span.of_int_sec 3600 }
+    >>| ok_exn
+  in
+  let push_book () =
+    Memory_venue.push_book
+      venue
+      { symbol = params.symbol
+      ; time = Time_ns.to_int_ns_since_epoch (Time_source.now ts)
+      ; bids = [ { px = Price.of_int 99_990; sz = Size.one; n = 1 } ]
+      ; asks = [ { px = Price.of_int 100_010; sz = Size.one; n = 1 } ]
+      }
+  in
+  let advance_to ms =
+    let%bind () =
+      Time_source.advance_by_alarms
+        ts
+        ~to_:(Time_ns.of_int_ns_since_epoch (ms * 1_000_000))
+    in
+    Scheduler.yield_until_no_jobs_remain ()
+  in
+  push_book ();
+  let%bind () = advance_to 50 in
+  print_orders venue;
+  [%expect
+    {|
+    Sell 0.001@100070 gen 0
+    Sell 0.001@100050 gen 0
+    Sell 0.001@100030 gen 0
+    Buy 0.001@99970 gen 0
+    Buy 0.001@99950 gen 0
+    Buy 0.001@99930 gen 0
+    cancel_all calls: 0
+    |}];
+  let plans = (Live_memory.report live).plans in
+  Live_memory.update_params
+    live
+    { params with base_half_spread_bps = 5.; requote_interval_ms = 200 }
+  |> ok_exn;
+  let%bind () = advance_to 60 in
+  print_orders venue;
+  print_s
+    [%message
+      ""
+        ~new_plans:((Live_memory.report live).plans - plans : int)
+        ~half_spread:
+          ((Strategy.params (Live_memory.strategy live)).base_half_spread_bps : float)
+        ~mode:(Strategy.mode (Live_memory.strategy live) : Strategy.Mode.t)];
+  [%expect
+    {|
+    Sell 0.001@100090 gen 1
+    Sell 0.001@100070 gen 0
+    Sell 0.001@100050 gen 0
+    Buy 0.001@99950 gen 0
+    Buy 0.001@99930 gen 0
+    Buy 0.001@99910 gen 1
+    cancel_all calls: 0
+    ((new_plans 1) (half_spread 5) (mode Running))
+    |}];
+  print_s
+    [%sexp
+      (Live_memory.update_params live { params with symbol = Symbol.of_string "ETH" }
+       : unit Or_error.t)];
+  [%expect {| (Error ("update_params cannot change the symbol" (from BTC) (to_ ETH))) |}];
+  let stopped = Live_memory.stop live in
+  let%bind () = advance_to 2_000 in
+  let%bind (_ : Live.Report.t) = stopped in
+  printf "cancel_all calls after stop: %d\n" (Memory_venue.cancel_all_calls venue);
+  [%expect {| cancel_all calls after stop: 1 |}];
+  return ()
+;;
