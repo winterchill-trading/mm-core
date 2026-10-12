@@ -43,6 +43,7 @@ type config = Bugs.t
 
 type t =
   { bugs : Bugs.t
+  ; time_source : Time_source.t
   ; random : Random.State.t
   ; mutable injected : Injected.t
   ; mutable orders : Open_order.t list
@@ -50,6 +51,7 @@ type t =
   ; mutable next_oid : int
   ; mutable places : int
   ; mutable book_writers : L2.t Pipe.Writer.t list
+  ; mutable last_book : L2.t option
   ; mutable reconnect_hooks : (unit -> unit) list
   ; fills_r : Fill.t Pipe.Reader.t
   ; fills_w : Fill.t Pipe.Writer.t
@@ -61,37 +63,34 @@ type t =
   ; mutable entry : Price.t option
   }
 
-let connect (bugs : Bugs.t) =
+let create ?(time_source = Time_source.wall_clock ()) (bugs : Bugs.t) =
   let fills_r, fills_w = Pipe.create () in
   let updates_r, updates_w = Pipe.create () in
-  return
-    (Ok
-       { bugs
-       ; random = Random.State.make [| bugs.seed |]
-       ; injected =
-           { rejects = 0
-           ; late_cancels = 0
-           ; split_fills = 0
-           ; stale_polls = 0
-           ; late_places = 0
-           }
-       ; orders = []
-       ; last_snapshot = []
-       ; next_oid = 0
-       ; places = 0
-       ; book_writers = []
-       ; reconnect_hooks = []
-       ; fills_r
-       ; fills_w
-       ; updates_r
-       ; updates_w
-       ; seen_trades = Trade_id.Hash_set.create ()
-       ; closed = false
-       ; position = Size.zero
-       ; entry = None
-       })
+  { bugs
+  ; time_source
+  ; random = Random.State.make [| bugs.seed |]
+  ; injected =
+      { rejects = 0; late_cancels = 0; split_fills = 0; stale_polls = 0; late_places = 0 }
+  ; orders = []
+  ; last_snapshot = []
+  ; next_oid = 0
+  ; places = 0
+  ; book_writers = []
+  ; last_book = None
+  ; reconnect_hooks = []
+  ; fills_r
+  ; fills_w
+  ; updates_r
+  ; updates_w
+  ; seen_trades = Trade_id.Hash_set.create ()
+  ; closed = false
+  ; position = Size.zero
+  ; entry = None
+  }
 ;;
 
+let connect bugs = return (Ok (create bugs))
+let now_ns t = Time_ns.to_int_ns_since_epoch (Time_source.now t.time_source)
 let percent t p = p > 0 && Random.State.int t.random 100 < p
 
 let instrument _ symbol =
@@ -106,6 +105,7 @@ let books t _symbol =
 ;;
 
 let push_book t book =
+  t.last_book <- Some book;
   t.book_writers <- List.filter t.book_writers ~f:(fun w -> not (Pipe.is_closed w));
   List.iter t.book_writers ~f:(fun w -> Pipe.write_without_pushback w book)
 ;;
@@ -208,10 +208,22 @@ let rest t (r : Order_request.t) ~px =
          ; orig_size = Some r.size
          ; order_id
          ; client_order_id = r.client_order_id
-         ; timestamp = Time_ns.to_int_ns_since_epoch (Time_ns.now ())
+         ; timestamp = now_ns t
          }
        ];
   order_id
+;;
+
+(* A post-only order that would take liquidity from the last pushed book. *)
+let would_cross t (r : Order_request.t) ~px =
+  match r.order_type, t.last_book with
+  | Limit Alo, Some book ->
+    (match r.side with
+     | Buy ->
+       Option.exists (L2.best_ask book) ~f:(fun (l : L2.Level.t) -> Price.(px >= l.px))
+     | Sell ->
+       Option.exists (L2.best_bid book) ~f:(fun (l : L2.Level.t) -> Price.(px <= l.px)))
+  | (Limit (Gtc | Ioc) | Market _), _ | Limit Alo, None -> false
 ;;
 
 let place t requests =
@@ -219,7 +231,7 @@ let place t requests =
   if t.places <= t.bugs.late_places
   then (
     t.injected <- { t.injected with late_places = t.injected.late_places + 1 };
-    upon (Clock_ns.after t.bugs.late_place_delay) (fun () ->
+    upon (Time_source.after t.time_source t.bugs.late_place_delay) (fun () ->
       List.iter requests ~f:(fun (r : Order_request.t) ->
         Option.iter r.px ~f:(fun px -> ignore (rest t r ~px : Order_id.t))));
     return (Or_error.error_string "place: timed out"))
@@ -229,6 +241,14 @@ let place t requests =
          (List.map requests ~f:(fun (r : Order_request.t) : Order_status.t ->
             match r.px with
             | None -> Rejected (Unsupported "no market orders here")
+            | Some px when would_cross t r ~px ->
+              let best f =
+                Option.bind t.last_book ~f:(fun b ->
+                  Option.map (f b) ~f:(fun (l : L2.Level.t) -> l.px))
+              in
+              Rejected
+                (Post_only_would_cross
+                   { best_bid = best L2.best_bid; best_ask = best L2.best_ask })
             | Some _ when percent t t.bugs.reject_percent ->
               t.injected <- { t.injected with rejects = t.injected.rejects + 1 };
               Rejected Insufficient_margin
@@ -261,7 +281,7 @@ let remove t oids =
 ;;
 
 let fill_resting t (o : Open_order.t) ~tid =
-  let now = Time_ns.to_int_ns_since_epoch (Time_ns.now ()) in
+  let now = now_ns t in
   t.orders
   <- List.filter t.orders ~f:(fun (r : Open_order.t) ->
        not (Order_id.equal r.order_id o.order_id));
@@ -299,7 +319,8 @@ let cancel t _symbol oids =
   if Time_ns.Span.(t.bugs.cancel_ack_delay > zero)
   then (
     t.injected <- { t.injected with late_cancels = t.injected.late_cancels + 1 };
-    upon (Clock_ns.after t.bugs.cancel_ack_delay) (fun () -> remove t oids))
+    upon (Time_source.after t.time_source t.bugs.cancel_ack_delay) (fun () ->
+      remove t oids))
   else remove t oids;
   return (Ok ())
 ;;
@@ -316,5 +337,6 @@ let close t =
 ;;
 
 let orders t = t.orders
+let position t = t.position
 let injected t = t.injected
 let is_closed t = t.closed

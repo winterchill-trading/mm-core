@@ -1,6 +1,8 @@
-(** An in-memory {!Mm_core.Venue.S} for live loop tests: rests every limit order, cancels
-    on request and lets the test push books and fills. The account reports the net
-    position of the distinct fills pushed so far, entered at the first fill's price.
+(** An in-memory {!Mm_core.Venue.S} for live loop tests: rests every limit order
+    (rejecting post-only orders that would cross the last pushed book), cancels on request
+    and lets the test push books and fills. Pushed books do not see our orders. The
+    account reports the net position of the distinct fills pushed so far, entered at the
+    first fill's price.
 
     With {!Bugs} it misbehaves the way real venues do, driven by a seeded random state so
     a run is repeatable for a given sequence of calls. *)
@@ -45,6 +47,10 @@ end
 
 include Venue.S with type config = Bugs.t
 
+(** [connect bugs] is [create bugs] on the wall clock. With a synthetic [time_source], bug
+    delays and order timestamps follow it. *)
+val create : ?time_source:Time_source.t -> Bugs.t -> t
+
 val push_book : t -> L2.t -> unit
 
 (** Delivers a fill. Under {!Bugs} it may arrive in parts, with trade ids
@@ -57,6 +63,9 @@ val fill_resting : t -> Open_order.t -> tid:int -> unit
 
 (** Resting orders, in placement order. *)
 val orders : t -> Open_order.t list
+
+(** Net position of the distinct fills delivered so far. *)
+val position : t -> Size.t
 
 val injected : t -> Injected.t
 val is_closed : t -> bool
