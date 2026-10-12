@@ -135,7 +135,7 @@ let%expect_test "a reconnect burst stays inside the grace period; a later one tr
     in
     Scheduler.yield_until_no_jobs_remain ()
   in
-  (* A book whose mid flips by 10 bps every [step] ms, so each tick replaces the ladder. *)
+  (* A book whose mid flips by 10 bps every 2 ms, so each tick replaces the ladder. *)
   let burst ~from ~until =
     Deferred.List.iter ~how:`Sequential (List.range from until ~stride:2) ~f:(fun at ->
       let%bind () = advance_to at in
