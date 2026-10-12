@@ -86,6 +86,11 @@ module Unquoted = struct
         }
     | Room_below_lot of { room : Size.t }
     | Non_positive_price
+    | Soft_limit of
+        { position : Size.t
+        ; soft_max_position : Size.t
+        ; bump_left : Size.t
+        }
   [@@deriving sexp, compare, equal]
 end
 
@@ -128,9 +133,20 @@ let room (m : Model.t) ~position (side : Side.t) =
   | Sell -> Size.(m.capacity + position)
 ;;
 
+(* Room under the soft limit plus what is left of the bump budget, if there is one. *)
+let soft_room (p : Params.t) ~bump_left ~position (side : Side.t) =
+  Option.map p.soft_max_position ~f:(fun soft ->
+    let limit = Size.(soft + bump_left) in
+    match side with
+    | Buy -> Size.(limit - position)
+    | Sell -> Size.(limit + position))
+;;
+
 (* Quotes of one side, or why there are none. *)
-let side_ladder (p : Params.t) (m : Model.t) market ~position side =
-  let room = room m ~position side in
+let side_ladder (p : Params.t) (m : Model.t) market ~bump_left ~position side =
+  let hard_room = room m ~position side in
+  let soft_room = soft_room p ~bump_left ~position side in
+  let room = Option.fold soft_room ~init:hard_room ~f:Size.min in
   let sizes = level_sizes p ~room in
   let rungs =
     rungs
@@ -150,8 +166,16 @@ let side_ladder (p : Params.t) (m : Model.t) market ~position side =
   let reason : Unquoted.t option =
     if not (List.is_empty quotes)
     then None
-    else if not (Size.is_positive room)
+    else if not (Size.is_positive hard_room)
     then Some (At_limit { position; capacity = m.capacity })
+    else if Option.exists soft_room ~f:(fun soft -> Size.(soft < p.lot))
+    then
+      Some
+        (Soft_limit
+           { position
+           ; soft_max_position = Option.value_exn p.soft_max_position
+           ; bump_left
+           })
     else if List.is_empty rungs
     then Some (Room_below_lot { room })
     else Some Non_positive_price
@@ -159,13 +183,14 @@ let side_ladder (p : Params.t) (m : Model.t) market ~position side =
   rungs, quotes, reason
 ;;
 
-let quote_with_reasons (p : Params.t) market inventory =
+let quote_with_reasons ?bump_left (p : Params.t) market inventory =
+  let bump_left = Option.value bump_left ~default:p.bump_budget in
   match model p market inventory with
   | None -> [], [ Side.Buy, Unquoted.No_book; Sell, No_book ]
   | Some m ->
     let position = Inventory.position inventory in
-    let _, bids, bid_reason = side_ladder p m market ~position Buy in
-    let _, asks, ask_reason = side_ladder p m market ~position Sell in
+    let _, bids, bid_reason = side_ladder p m market ~bump_left ~position Buy in
+    let _, asks, ask_reason = side_ladder p m market ~bump_left ~position Sell in
     ( bids @ asks
     , List.filter_opt
         [ Option.map bid_reason ~f:(fun r -> Side.Buy, r)
@@ -173,11 +198,17 @@ let quote_with_reasons (p : Params.t) market inventory =
         ] )
 ;;
 
-let quote p market inventory = fst (quote_with_reasons p market inventory)
-let unquoted p market inventory = snd (quote_with_reasons p market inventory)
+let quote ?bump_left p market inventory =
+  fst (quote_with_reasons ?bump_left p market inventory)
+;;
+
+let unquoted ?bump_left p market inventory =
+  snd (quote_with_reasons ?bump_left p market inventory)
+;;
 
 module For_testing = struct
-  let explain (p : Params.t) market inventory =
+  let explain ?bump_left (p : Params.t) market inventory =
+    let bump_left = Option.value bump_left ~default:p.bump_budget in
     let buf = Buffer.create 1024 in
     let line indent fmt =
       ksprintf
@@ -233,14 +264,22 @@ module For_testing = struct
          m.half_spread_bps
          p.base_half_spread_bps;
        List.iter [ Side.Buy; Sell ] ~f:(fun side ->
-         let rungs, _, reason = side_ladder p m market ~position side in
+         let rungs, _, reason = side_ladder p m market ~bump_left ~position side in
          line
            1
-           "%s: room %s"
+           "%s: room %s%s"
            (match side with
             | Buy -> "bids"
             | Sell -> "asks")
-           (Size.to_string (room m ~position side));
+           (Size.to_string (room m ~position side))
+           (match soft_room p ~bump_left ~position side with
+            | None -> ""
+            | Some soft ->
+              sprintf
+                ", soft room %s (soft limit %s + bump left %s)"
+                (Size.to_string soft)
+                (Size.to_string (Option.value_exn p.soft_max_position))
+                (Size.to_string bump_left));
          List.iter rungs ~f:(fun (r : Rung.t) ->
            line
              2

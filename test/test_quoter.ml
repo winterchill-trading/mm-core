@@ -314,3 +314,44 @@ let%expect_test "quotes under each parameter preset" =
       ask L2 8100 @ 0.0123526
     |}]
 ;;
+
+let%expect_test "soft limit pulls only the side that grows the position" =
+  let params = { params with soft_max_position = Some (sz "0.004") } in
+  let show ?bump_left position =
+    let quotes, reasons =
+      Quoter.quote_with_reasons ?bump_left params (market ()) (inventory position)
+    in
+    let total side =
+      List.filter quotes ~f:(fun (q : Quote.t) -> Side.equal q.side side)
+      |> List.map ~f:(fun (q : Quote.t) -> q.sz)
+      |> Size.sum
+    in
+    print_s
+      [%message
+        ""
+          ~bids:(total Buy : Size.t)
+          ~asks:(total Sell : Size.t)
+          (reasons : (Side.t * Quoter.Unquoted.t) list)]
+  in
+  show "0.002";
+  [%expect {| ((bids 0.002) (asks 0.003) (reasons ())) |}];
+  show "0.004";
+  [%expect
+    {|
+    ((bids 0) (asks 0.003)
+     (reasons
+      ((Buy
+        (Soft_limit (position 0.004) (soft_max_position 0.004) (bump_left 0))))))
+    |}];
+  show "-0.0045";
+  [%expect
+    {|
+    ((bids 0.003) (asks 0)
+     (reasons
+      ((Sell
+        (Soft_limit (position -0.0045) (soft_max_position 0.004) (bump_left 0))))))
+    |}];
+  (* A bump budget lets the growing side quote that much further. *)
+  show ~bump_left:(sz "0.0025") "0.004";
+  [%expect {| ((bids 0.0025) (asks 0.003) (reasons ())) |}]
+;;
