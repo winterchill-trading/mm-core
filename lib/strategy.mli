@@ -62,3 +62,8 @@ val inventory : t -> Inventory.t
 val open_orders : t -> Open_order.t list
 val generation : t -> int
 val peak_pnl : t -> Usd.t
+
+(** How far fills have taken the position past [soft_max_position], summed over the run
+    (each fill counts only the part beyond both the soft limit and the position before
+    it). The quoter gets [bump_budget - bump_used] as its [bump_left]. *)
+val bump_used : t -> Size.t

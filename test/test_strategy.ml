@@ -237,3 +237,61 @@ let%expect_test "a runaway requote loop trips the action rate kill switch" =
     (Halted (Max_action_rate (actions 42)))
     |}]
 ;;
+
+let%expect_test "fills past the soft limit use up the bump budget" =
+  let params =
+    { Params.btc with
+      soft_max_position = Some (sz "0.002")
+    ; bump_budget = sz "0.0015"
+    ; requote_interval_ms = 100
+    }
+  in
+  let venue = Fake_venue.create () in
+  let t = Strategy.create params in
+  let t = Strategy.on_book t (book ~time:0 ~bid:"99990" ~ask:"100010" ()) in
+  let show t ~now =
+    let t, actions = Strategy.tick t ~now:(ms now) in
+    Fake_venue.apply venue ~now:(ms now) actions;
+    let t = Strategy.on_open_orders t venue.orders in
+    let total side =
+      List.filter venue.orders ~f:(fun o -> Side.equal o.side side)
+      |> List.map ~f:(fun (o : Open_order.t) -> o.size)
+      |> Size.sum
+    in
+    print_s
+      [%message
+        ""
+          ~position:(Inventory.position (Strategy.inventory t) : Size.t)
+          ~bump_used:(Strategy.bump_used t : Size.t)
+          ~resting_bids:(total Buy : Size.t)
+          ~resting_asks:(total Sell : Size.t)];
+    t
+  in
+  let buy t ~tid ~size ~now =
+    let t = Strategy.on_book t (book ~time:now ~bid:"99990" ~ask:"100010" ()) in
+    let t = Strategy.on_fill t (fill ~time:now ~tid ~side:Buy ~px:"99970" ~sz:size ()) in
+    show t ~now
+  in
+  let t = show t ~now:0 in
+  [%expect {| ((position 0) (bump_used 0) (resting_bids 0.003) (resting_asks 0.003)) |}];
+  let t = buy t ~tid:1 ~size:"0.002" ~now:200 in
+  [%expect
+    {| ((position 0.002) (bump_used 0) (resting_bids 0.0015) (resting_asks 0.003)) |}];
+  let t = buy t ~tid:2 ~size:"0.001" ~now:400 in
+  [%expect
+    {| ((position 0.003) (bump_used 0.001) (resting_bids 0) (resting_asks 0.003)) |}];
+  let t = buy t ~tid:3 ~size:"0.001" ~now:600 in
+  [%expect
+    {| ((position 0.004) (bump_used 0.002) (resting_bids 0) (resting_asks 0.003)) |}];
+  (* Selling back under the soft limit does not refund the budget. *)
+  let t =
+    Strategy.on_fill t (fill ~time:800 ~tid:4 ~side:Sell ~px:"100030" ~sz:"0.003" ())
+  in
+  let t = Strategy.on_book t (book ~time:800 ~bid:"99990" ~ask:"100010" ()) in
+  let (_ : Strategy.t) = show t ~now:800 in
+  [%expect
+    {|
+    ((position 0.001) (bump_used 0.002) (resting_bids 0.001)
+     (resting_asks 0.003))
+    |}]
+;;

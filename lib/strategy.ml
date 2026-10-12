@@ -22,6 +22,7 @@ type t =
   ; last_quoted_position : Size.t option
   ; awaiting_ack_since : int option
   ; action_rate : Risk.Action_rate.t
+  ; bump_used : Size.t
   }
 [@@deriving sexp_of]
 
@@ -39,6 +40,7 @@ let create params =
   ; last_quoted_position = None
   ; awaiting_ack_since = None
   ; action_rate = Risk.Action_rate.empty
+  ; bump_used = Size.zero
   }
 ;;
 
@@ -49,9 +51,29 @@ let on_book t (book : L2.t) =
   if ours t book.symbol then { t with market = Market_state.on_book t.market book } else t
 ;;
 
+(* How far a move from [before] to [after] goes past the soft limit, beyond the furthest
+   point of [before] on the same side. *)
+let bump ~soft ~before ~after =
+  let base =
+    if Fx.sign_of_size before = Fx.sign_of_size after
+    then Size.max soft (Size.abs before)
+    else soft
+  in
+  Size.max Size.zero Size.(abs after - base)
+;;
+
 let on_fill t (fill : Fill.t) =
   if ours t fill.symbol
-  then { t with inventory = Inventory.on_fill t.inventory fill }
+  then (
+    let before = Inventory.position t.inventory in
+    let inventory = Inventory.on_fill t.inventory fill in
+    let bump_used =
+      match t.params.soft_max_position with
+      | None -> t.bump_used
+      | Some soft ->
+        Size.(t.bump_used + bump ~soft ~before ~after:(Inventory.position inventory))
+    in
+    { t with inventory; bump_used })
   else t
 ;;
 
@@ -166,7 +188,8 @@ let tick t ~now =
        if not (should_requote t ~now ~was_running)
        then t, []
        else (
-         let desired = Quoter.quote t.params t.market t.inventory in
+         let bump_left = Size.(max zero (t.params.bump_budget - t.bump_used)) in
+         let desired = Quoter.quote ~bump_left t.params t.market t.inventory in
          let plan =
            Reconciler.reconcile
              t.params
@@ -200,3 +223,4 @@ let inventory t = t.inventory
 let open_orders t = t.open_orders
 let generation t = t.generation
 let peak_pnl t = t.peak_pnl
+let bump_used t = t.bump_used
