@@ -175,3 +175,47 @@ let%expect_test "a reconnect burst stays inside the grace period; a later one tr
   let%bind (_ : Live.Report.t) = stopped in
   return ()
 ;;
+
+let%expect_test "on_resync hooks run on every reconnect, after the loop's own resync" =
+  Log.Global.set_output [];
+  let ts = Time_source.create ~now:(Time_ns.of_int_ns_since_epoch 0) () in
+  let time_source = Time_source.read_only ts in
+  let venue = Memory_venue.create ~time_source Memory_venue.Bugs.none in
+  let%bind live =
+    Live_memory.start
+      ~time_source
+      venue
+      { params = Params.btc; summary_interval = Time_ns.Span.of_int_sec 3600 }
+    >>| ok_exn
+  in
+  let hook name () =
+    print_s
+      [%message
+        name
+          ~reconnects:((Live_memory.report live).reconnects : int)
+          ~now:(Time_source.now ts : Time_ns.Alternate_sexp.t)]
+  in
+  Live_memory.on_resync live ~f:(hook "first");
+  Live_memory.on_resync live ~f:(hook "second");
+  let%bind () =
+    Time_source.advance_by_alarms ts ~to_:(Time_ns.of_int_ns_since_epoch 1_000_000_000)
+  in
+  Memory_venue.simulate_reconnect venue;
+  [%expect
+    {|
+    (first (reconnects 1) (now "1970-01-01 00:00:01Z"))
+    (second (reconnects 1) (now "1970-01-01 00:00:01Z"))
+    |}];
+  Memory_venue.simulate_reconnect venue;
+  [%expect
+    {|
+    (first (reconnects 2) (now "1970-01-01 00:00:01Z"))
+    (second (reconnects 2) (now "1970-01-01 00:00:01Z"))
+    |}];
+  let stopped = Live_memory.stop live in
+  let%bind () =
+    Time_source.advance_by_alarms ts ~to_:(Time_ns.of_int_ns_since_epoch 5_000_000_000)
+  in
+  let%bind (_ : Live.Report.t) = stopped in
+  return ()
+;;
