@@ -137,6 +137,7 @@ module Make (V : Venue.S) = struct
     ; mutable rejections : int String.Map.t
     ; mutable orders_cancelled : int
     ; mutable reconnects : int
+    ; mutable resync_hooks : (unit -> unit) list
     }
 
   let params t = t.config.params
@@ -455,6 +456,7 @@ module Make (V : Venue.S) = struct
         ; rejections = String.Map.empty
         ; orders_cancelled = 0
         ; reconnects = 0
+        ; resync_hooks = []
         }
       in
       Log.Global.info_s [%message "starting" (params : Params.t)];
@@ -462,6 +464,7 @@ module Make (V : Venue.S) = struct
         t.reconnects <- t.reconnects + 1;
         t.strategy <- Strategy.on_resync t.strategy ~now:(now_ns t);
         Log.Global.info "venue reconnected; resyncing open orders and position";
+        List.iter (List.rev t.resync_hooks) ~f:(fun f -> f ());
         request_sync t);
       (* The first snapshot must be in before quoting, so that resting orders from an
          earlier run are reconciled (cancelled) rather than duplicated. *)
@@ -531,6 +534,7 @@ module Make (V : Venue.S) = struct
   ;;
 
   let tick_to_order t = Latency_histogram.stats t.latency
+  let on_resync t ~f = t.resync_hooks <- f :: t.resync_hooks
 
   let first_mid
     ?(time_source = Time_source.wall_clock ())

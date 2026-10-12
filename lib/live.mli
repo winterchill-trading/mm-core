@@ -93,6 +93,13 @@ module Make (V : Venue.S) : sig
 
   val strategy : t -> Strategy.t
 
+  (** Registers [f], called on every venue reconnect right after the loop's own strategy
+      has started its action rate grace period ({!Strategy.on_resync}) and before the
+      resync poll is queued, in registration order. Observers that mirror the strategy (a
+      shadow strategy, a strategy log) call [Strategy.on_resync] on their copy here so it
+      starts the same grace period at the same time. *)
+  val on_resync : t -> f:(unit -> unit) -> unit
+
   (** Tick-to-order latency: from the arrival of a book update (on the time source) to the
       moment the plan it led to is sent, for every plan sent after a book update. The
       clock starts at the first book since the previous tick, so time spent waiting for
