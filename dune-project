@@ -28,3 +28,19 @@
   ppx_jane
   (core_unix :with-test)
   (core_bench :with-test)))
+
+(package
+ (name mm-core-replay)
+ (synopsis "Run the mm-core strategy over recorded market data")
+ (description
+  "Replays normalized event logs of market-data through the mm-core strategy and prints the quotes it would send per book update. The mm-core binary.")
+ (depends
+  ocaml
+  dune
+  core
+  core_unix
+  async
+  exchange-core
+  market-data
+  mm-core
+  ppx_jane))
