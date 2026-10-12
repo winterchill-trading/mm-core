@@ -42,13 +42,14 @@ All modules live under `Mm_core`.
 | `Market_state` | Last book, mid, microprice and EWMA volatility of mid returns |
 | `Inventory` | Position, average entry, realized/unrealized PnL and fees from fills, synced from account snapshots |
 | `Quote` | One desired order: side, level, price, size |
-| `Quoter` | Pure `quote : Params.t -> Market_state.t -> Inventory.t -> Quote.t list` |
+| `Quoter` | Pure `quote : Params.t -> Market_state.t -> Inventory.t -> Quote.t list`; `quote_with_reasons` adds a typed `Unquoted.t` for each side without quotes; `For_testing.explain` prints every term as a tree |
 | `Action` | `Keep oid \| Cancel oid \| Place Order_request.t` |
 | `Reconciler` | Minimal plan from resting orders to the desired ladder; deterministic client order ids |
-| `Risk` | Kill switch (`Ok \| Halt reason`) and the flatten plan |
+| `Risk` | Kill switch (`Ok \| Halt reason`), the one second `Action_rate` window and the flatten plan |
 | `Strategy` | State machine: `on_book`, `on_fill`, `on_open_orders`, `on_account`, `tick ~now` |
 | `Venue` | `module type S`: the Async venue client the live loop runs on |
-| `Live` | `Make (V : Venue.S)`: feeds, polls, plan execution, shutdown; the run `Report`; `stop_signal` (SIGINT/SIGTERM) |
+| `Latency_histogram` | Latency histogram at two significant digits: count, p50, p99, exact max |
+| `Live` | `Make (V : Venue.S)`: feeds, polls, plan execution, shutdown; the run `Report`; tick-to-order latency; `stop_signal` (SIGINT/SIGTERM) |
 
 Times are nanoseconds since the epoch everywhere (as in `exchange-core`); durations in
 `Params` are milliseconds.
@@ -117,6 +118,11 @@ Live_hl.connect_and_run config ~symbol
   report. `stop_signal` resolves on SIGINT/SIGTERM or after `run_for`; a second signal
   exits with code 130 at once. The position is not flattened on exit.
 - The report's cancellation count comes from `Cancelled` order updates.
+- `tick_to_order` reports p50, p99 and max of the time from a book update's arrival to
+  the send of the plan it led to (sequencer waits included).
+- `start`, `run`, `connect_and_run`, `first_mid` and `stop_signal` take an optional
+  `?time_source` (default the wall clock). With `Time_source.create` a whole run is driven
+  by `advance_by_alarms`, as the property and latency tests do.
 
 ## Strategy
 
@@ -157,10 +163,21 @@ side at the limit gets no quotes and filling every quote never takes the positio
 `cap <= max_position`. A property test checks that quotes never cross (each other or the
 book) and never breach the limit.
 
+With `soft_max_position`, the room is also capped at `soft + bump_left - position` for
+bids and `soft + bump_left + position` for asks: past the soft limit only the side that
+would grow the position is pulled, where `max_position` halts. `bump_budget` is how far,
+in total over a run, fills may carry the position past the soft limit; the strategy
+tracks what it has used (`Strategy.bump_used`) and never refunds it.
+
+A side without quotes gets a reason: `No_book`, `At_limit`, `Room_below_lot`,
+`Non_positive_price` or `Soft_limit`.
+
 ### Reconciliation
 
 Each desired quote keeps the closest resting order on the same side with exactly its size,
-within `requote_threshold_bps` of its price and younger than `order_ttl_ms`. Unmatched
+within `requote_threshold_bps` of its price and younger than `order_ttl_ms`, and that
+stays strictly between the previous level's final price and the next desired price, so
+the ladder never holds two orders on one price. Unmatched
 resting orders are cancelled; unmatched quotes are placed as post-only (`Alo`) limit
 orders. Client order ids are `0x` plus 32 hex digits encoding
 `symbol (8 bytes) | side (1) | level (1) | generation (6)`: reproducible, readable, and a
@@ -173,6 +190,7 @@ valid client id on Hyperliquid (128-bit cloid), Binance and Bybit (at most 36 ch
 | `abs(position) > max_position` | sticky | cancel all, reduce-only IOC for the whole position at `mid -/+ flatten_slippage_bps` |
 | `peak_pnl - pnl > max_drawdown`, `pnl = realized + unrealized(mid) - fees` | sticky | same |
 | no two-sided book | until data | cancel all |
+| more than `max_actions_per_sec` cancels and places in the last second | sticky | same as position |
 | `now - book_time > max_data_age_ms` | until data | cancel all |
 
 ### Strategy loop
@@ -202,6 +220,13 @@ by trade id.
 | max position / max notional | 0.01 BTC / 1500 USD |
 | requote threshold / interval / order ttl | 1 bps / 1 s / 60 s |
 | max drawdown / max data age / flatten slippage | 50 USD / 5 s / 50 bps |
+| max actions per second | 100 |
+| soft max position / bump budget | none / 0 |
+
+`Params.validate` names every field (no wildcard), so a new field needs its own check, and
+rejects NaN and infinity in every float. Fields added after the first release
+(`max_actions_per_sec`, `soft_max_position`, `bump_budget`) default when absent from a
+sexp.
 
 `Params.for_instrument instrument ~mid` rescales these to another instrument: about 100
 USD per order (nearest lot), 10 orders of position room and 1.5x that in notional. Pass
@@ -210,7 +235,38 @@ order size becomes at least 1.2x that, rounded up to the lot.
 
 ## Tests
 
-`dune test` runs the strategy's expect and `Base_quickcheck` tests (quotes never cross or
-breach the limit; reconciling a ladder against itself is a no-op) and a live-loop test
-over an in-memory `Venue.S` implementation: it quotes the expected ladder, applies a fill
-delivered twice only once, and on stop cancels every order and closes the venue.
+`dune test` runs:
+
+- expect and `Base_quickcheck` tests of the strategy: quotes never cross or breach the
+  limit; reconciling a ladder against itself, or right after applying a plan, only keeps;
+  `Risk.flatten` only sends reduce-only orders that shrink the position; NaN in any float
+  parameter fails `validate`; quotes for one market state under each parameter preset;
+  the soft limit and the action rate kill switch.
+- live-loop tests over `test/memory_venue.ml`, an in-memory `Venue.S` that rejects
+  crossing post-only orders and has a seeded bug mode (`Bugs.t`: random rejects, late
+  cancel acks, fills split in parts, stale open-order polls, places that time out but rest
+  later, slow place answers). A place that timed out and rests later is adopted, not
+  duplicated; one that rests after the loop re-placed is cancelled.
+- a property test feeding random book, fill and wait scripts through `Live.Make` on a
+  synthetic clock, checking after each step that resting quotes do not cross, sit on
+  distinct prices, respect `max_position`, and that no order was rejected.
+- `test/stepped.ml`, a deterministic stepped harness: a scripted book list, a toy
+  exchange with seeded fills, and the strategy in lockstep; one run is pinned line by line.
+- `test_allocation.ml` prints minor words per `Quoter.quote` call.
+
+## Benchmarks
+
+```sh
+dune exec ./bench/main.exe -- -quota 2 -ascii
+```
+
+On an M-series Mac (default dev profile):
+
+| Case | Time/run | Minor words/run |
+| --- | --- | --- |
+| `quote` flat | 362 ns | 357 |
+| `quote` long | 363 ns | 357 |
+| `quote` + `reconcile` (all kept) | 1125 ns | 748 |
+
+Before the ladder kept per-rung terms for `explain` and reasons, `quote` was 317 ns and
+221 words.
