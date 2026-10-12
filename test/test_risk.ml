@@ -88,3 +88,41 @@ let%expect_test "flatten: cancel everything, reduce-only IOC through the mid" =
        : Action.t list)];
   [%expect {| ((Cancel 1) (Cancel 2)) |}]
 ;;
+
+let%expect_test "action rate window" =
+  let rate =
+    List.fold
+      [ 0, 6; 400, 12; 900, 0; 1_000, 3 ]
+      ~init:Risk.Action_rate.empty
+      ~f:(fun rate (at, actions) -> Risk.Action_rate.record rate ~now:(ms at) ~actions)
+  in
+  List.iter [ 1_000; 1_399; 1_400; 2_000 ] ~f:(fun now ->
+    printf "%d ms: %d\n" now (Risk.Action_rate.last_second rate ~now:(ms now)));
+  [%expect {|
+    1000 ms: 15
+    1399 ms: 15
+    1400 ms: 3
+    2000 ms: 0
+    |}]
+;;
+
+let%expect_test "too many actions in a second trip a sticky halt" =
+  let check actions =
+    print_s
+      [%sexp
+        (Risk.check
+           ~actions_last_second:actions
+           params
+           ~now:(ms 1_000)
+           ~peak_pnl:Usd.zero
+           (market "100000")
+           Inventory.empty
+         : Risk.t)]
+  in
+  check 100;
+  [%expect {| Ok |}];
+  check 101;
+  [%expect {| (Halt (Max_action_rate (actions 101))) |}];
+  print_s [%sexp (Risk.Reason.is_sticky (Max_action_rate { actions = 101 }) : bool)];
+  [%expect {| true |}]
+;;

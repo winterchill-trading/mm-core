@@ -4,11 +4,13 @@
     - [Max_position]: [|position| > max_position]
     - [Max_drawdown]: [peak_pnl - pnl > max_drawdown], with
       [pnl = realized + unrealized(mid) - fees] (skipped without a mid)
+    - [Max_action_rate]: more than [max_actions_per_sec] cancels and places sent in the
+      last second (only when the caller passes [actions_last_second])
     - [No_market_data]: no two-sided book yet
     - [Stale_market_data]: [now - book time > max_data_age_ms]
 
-    [Max_position] and [Max_drawdown] are sticky: the strategy stays halted and flattens.
-    Missing or stale data only pulls quotes until fresh data arrives. *)
+    [Max_position], [Max_drawdown] and [Max_action_rate] are sticky: the strategy stays
+    halted and flattens. Missing or stale data only pulls quotes until fresh data arrives. *)
 
 open! Core
 open Exchange_core
@@ -20,11 +22,26 @@ module Reason : sig
         { pnl : Usd.t
         ; peak : Usd.t
         }
+    | Max_action_rate of { actions : int }
+    (** a runaway loop: [actions] cancels and places in the last second *)
     | No_market_data
     | Stale_market_data of { age_ms : int }
   [@@deriving sexp, compare, equal]
 
   val is_sticky : t -> bool
+end
+
+(** Cancels and places sent, over a sliding one second window. *)
+module Action_rate : sig
+  type t [@@deriving sexp_of]
+
+  val empty : t
+
+  (** Records [actions] sent at [now] (nanoseconds since the epoch). *)
+  val record : t -> now:int -> actions:int -> t
+
+  (** Actions recorded in [(now - 1s, now]]. *)
+  val last_second : t -> now:int -> int
 end
 
 type t =
@@ -33,7 +50,14 @@ type t =
 [@@deriving sexp, compare, equal]
 
 (** [now] in nanoseconds since the epoch. *)
-val check : Params.t -> now:int -> peak_pnl:Usd.t -> Market_state.t -> Inventory.t -> t
+val check
+  :  ?actions_last_second:int
+  -> Params.t
+  -> now:int
+  -> peak_pnl:Usd.t
+  -> Market_state.t
+  -> Inventory.t
+  -> t
 
 (** Cancels every resting order on the symbol and, when there is a position and a mid,
     sends a reduce-only IOC for the whole position at [mid -/+ flatten_slippage_bps]

@@ -8,14 +8,30 @@ module Reason = struct
         { pnl : Usd.t
         ; peak : Usd.t
         }
+    | Max_action_rate of { actions : int }
     | No_market_data
     | Stale_market_data of { age_ms : int }
   [@@deriving sexp, compare, equal]
 
   let is_sticky = function
-    | Max_position _ | Max_drawdown _ -> true
+    | Max_position _ | Max_drawdown _ | Max_action_rate _ -> true
     | No_market_data | Stale_market_data _ -> false
   ;;
+end
+
+module Action_rate = struct
+  (* Newest first: (time, actions). *)
+  type t = (int * int) list [@@deriving sexp_of]
+
+  let empty = []
+  let window = 1_000_000_000
+  let prune t ~now = List.take_while t ~f:(fun (at, _) -> now - at < window)
+
+  let record t ~now ~actions =
+    if actions <= 0 then prune t ~now else (now, actions) :: prune t ~now
+  ;;
+
+  let last_second t ~now = List.sum (module Int) (prune t ~now) ~f:snd
 end
 
 type t =
@@ -23,7 +39,7 @@ type t =
   | Halt of Reason.t
 [@@deriving sexp, compare, equal]
 
-let check (p : Params.t) ~now ~peak_pnl market inventory =
+let check ?actions_last_second (p : Params.t) ~now ~peak_pnl market inventory =
   let position = Inventory.position inventory in
   let drawdown =
     Option.bind (Market_state.mid market) ~f:(fun mark ->
@@ -31,10 +47,16 @@ let check (p : Params.t) ~now ~peak_pnl market inventory =
       let peak = Usd.max peak_pnl pnl in
       Option.some_if Usd.(peak - pnl > p.max_drawdown) (Reason.Max_drawdown { pnl; peak }))
   in
+  let action_rate =
+    Option.bind actions_last_second ~f:(fun actions ->
+      Option.some_if
+        (actions > p.max_actions_per_sec)
+        (Reason.Max_action_rate { actions }))
+  in
   if Size.(abs position > p.max_position)
   then Halt (Max_position { position })
   else (
-    match drawdown with
+    match Option.first_some drawdown action_rate with
     | Some reason -> Halt reason
     | None ->
       (match Market_state.mid market, Market_state.age_ms market ~now with
