@@ -114,6 +114,8 @@ let push_book t book =
   List.iter t.book_writers ~f:(fun w -> Pipe.write_without_pushback w book)
 ;;
 
+let open_book_feeds t = List.count t.book_writers ~f:(fun w -> not (Pipe.is_closed w))
+
 let deliver_fill t (fill : Fill.t) =
   if not (Hash_set.mem t.seen_trades fill.trade_id)
   then (

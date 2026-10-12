@@ -54,6 +54,9 @@ val create : ?time_source:Time_source.t -> Bugs.t -> t
 
 val push_book : t -> L2.t -> unit
 
+(** Book subscriptions whose reader is still open. *)
+val open_book_feeds : t -> int
+
 (** Delivers a fill. Under {!Bugs} it may arrive in parts, with trade ids
     [tid * 100 + part] (a fill delivered whole keeps its trade id). *)
 val push_fill : t -> Fill.t -> unit
