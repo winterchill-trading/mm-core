@@ -35,12 +35,15 @@ type t =
   ; max_drawdown : Usd.t (** kill switch: peak-to-current PnL drop *)
   ; max_data_age_ms : int (** kill switch: book age before quotes are pulled *)
   ; flatten_slippage_bps : float (** limit price offset of the reduce-only IOC flatten *)
+  ; max_actions_per_sec : int
+  (** kill switch: more cancels and places than this in the last second (absent in a
+      sexp: 100) *)
   }
 [@@deriving sexp, compare, equal]
 
 (** Defaults for BTC perpetuals around 100k (integer tick, 5 size decimals): 3 levels of
     0.001 BTC, 3 bps half-spread, 2 bps spacing, 0.01 BTC / 1500 USD position limit,
-    volatility capped at 10 bps, 50 USD drawdown limit. *)
+    volatility capped at 10 bps, 50 USD drawdown limit, at most 100 actions per second. *)
 val btc : t
 
 (** [btc] rescaled to an instrument trading around [mid]: symbol, [tick] (default the

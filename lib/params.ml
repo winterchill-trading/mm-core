@@ -22,6 +22,7 @@ type t =
   ; max_drawdown : Usd.t
   ; max_data_age_ms : int
   ; flatten_slippage_bps : float
+  ; max_actions_per_sec : int [@default 100]
   }
 [@@deriving sexp, compare, equal]
 
@@ -46,6 +47,7 @@ let btc =
   ; max_drawdown = Usd.of_string "50"
   ; max_data_age_ms = 5_000
   ; flatten_slippage_bps = 50.
+  ; max_actions_per_sec = 100
   }
 ;;
 
@@ -116,6 +118,7 @@ let validate t =
     ; Usd.is_positive t.max_drawdown, "max_drawdown must be positive"
     ; t.max_data_age_ms > 0, "max_data_age_ms must be positive"
     ; Float.(t.flatten_slippage_bps > 0.), "flatten_slippage_bps must be positive"
+    ; t.max_actions_per_sec > 0, "max_actions_per_sec must be positive"
     ]
   in
   match List.filter_map checks ~f:(fun (ok, msg) -> Option.some_if (not ok) msg) with
