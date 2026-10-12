@@ -126,3 +126,30 @@ let%expect_test "too many actions in a second trip a sticky halt" =
   print_s [%sexp (Risk.Reason.is_sticky (Max_action_rate { actions = 101 }) : bool)];
   [%expect {| true |}]
 ;;
+
+let%test_unit "action rate window matches a naive sum over the last second" =
+  let gen =
+    List.gen_non_empty
+      (Quickcheck.Generator.both (Int.gen_incl 0 700) (Int.gen_incl (-2) 20))
+  in
+  Quickcheck.test gen ~sexp_of:[%sexp_of: (int * int) list] ~f:(fun steps ->
+    (* steps are (gap in ms, actions) *)
+    let _, events =
+      List.fold_map steps ~init:0 ~f:(fun now (gap, actions) ->
+        let now = now + ms gap in
+        now, (now, actions))
+    in
+    let rate =
+      List.foldi events ~init:Risk.Action_rate.empty ~f:(fun i rate (now, actions) ->
+        let rate = Risk.Action_rate.record rate ~now ~actions in
+        let naive =
+          List.sum
+            (module Int)
+            (List.take events (i + 1))
+            ~f:(fun (at, n) -> if now - at < ms 1_000 && n > 0 then n else 0)
+        in
+        [%test_result: int] (Risk.Action_rate.last_second rate ~now) ~expect:naive;
+        rate)
+    in
+    ignore (rate : Risk.Action_rate.t))
+;;
