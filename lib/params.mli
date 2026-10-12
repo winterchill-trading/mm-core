@@ -46,11 +46,16 @@ val btc : t
 (** [btc] rescaled to an instrument trading around [mid]: symbol, [tick] (default the
     instrument's [price_tick]) and lot from the instrument, [order_size] about 100 USD at
     [mid] rounded to the nearest lot (at least one), [max_position] 10 orders and
-    [max_notional] 1.5 x [max_position] at [mid]. For BTC at 100k this reproduces [btc]. *)
+    [max_notional] 1.5 x [max_position] at [mid]. For BTC at 100k this reproduces [btc].
+
+    With the venue's [min_notional] (order value minimum, e.g. 100 USD on Binance's
+    BTCUSDT), the default [order_size] is at least [1.2 * min_notional] at [mid], rounded
+    up to the lot, so quotes a few bps below the mid still clear the minimum. *)
 val for_instrument
   :  ?tick:Price.t
   -> ?order_size:Size.t
   -> ?max_position:Size.t
+  -> ?min_notional:Usd.t
   -> Instrument.t
   -> mid:Price.t
   -> t

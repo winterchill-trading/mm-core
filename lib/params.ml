@@ -49,16 +49,39 @@ let btc =
   }
 ;;
 
-let for_instrument ?tick ?order_size ?max_position (instrument : Instrument.t) ~mid =
+let min_notional_safety = 1.2
+
+let default_order_size ?min_notional ~lot ~mid () =
+  let lot = Size.to_units lot in
+  (* about 100 USD, nearest lot, at least one *)
+  let units = Size.to_units (Fx.size_of_notional (Usd.of_int 100) mid) in
+  let around_100 = Int.max lot ((units + (lot / 2)) / lot * lot) in
+  match min_notional with
+  | None -> Size.of_units around_100
+  | Some min_notional ->
+    (* comfortably above the venue minimum, so quotes below the mid still pass it *)
+    let target = Usd.of_float (min_notional_safety *. Usd.to_float min_notional) in
+    let units = Size.to_units (Fx.size_of_notional target mid) in
+    let units =
+      if Usd.(Fx.notional mid (Size.of_units units) < target) then units + 1 else units
+    in
+    let floor = Fx.ceil_to (Int.max 1 units) ~step:lot in
+    Size.of_units (Int.max around_100 floor)
+;;
+
+let for_instrument
+  ?tick
+  ?order_size
+  ?max_position
+  ?min_notional
+  (instrument : Instrument.t)
+  ~mid
+  =
   let lot = Instrument.lot_size instrument in
   let order_size =
     match order_size with
     | Some order_size -> order_size
-    | None ->
-      (* about 100 USD, nearest lot, at least one *)
-      let units = Size.to_units (Fx.size_of_notional (Usd.of_int 100) mid) in
-      let lot = Size.to_units lot in
-      Size.of_units (Int.max lot ((units + (lot / 2)) / lot * lot))
+    | None -> default_order_size ?min_notional ~lot ~mid ()
   in
   let max_position = Option.value max_position ~default:(Size.scale order_size ~by:10) in
   { btc with
