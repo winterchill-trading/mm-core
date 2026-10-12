@@ -121,6 +121,8 @@ module Make (V : Venue.S) = struct
     ; seen_trades : Trade_id.Hash_set.t
     ; timers_stop : unit Ivar.t
     ; stopped : Report.t Ivar.t
+    ; latency : Latency_histogram.t
+    ; mutable book_waiting_since : Time_ns.t option
     ; mutable strategy : Strategy.t
     ; mutable account : Account_view.t option
     ; mutable stopping : bool
@@ -269,6 +271,8 @@ module Make (V : Venue.S) = struct
     if t.stopping
     then return ()
     else (
+      let book_at = t.book_waiting_since in
+      t.book_waiting_since <- None;
       let mode_before = Strategy.mode t.strategy in
       let strategy, plan = Strategy.tick t.strategy ~now:(now_ns t) in
       t.strategy <- strategy;
@@ -281,6 +285,8 @@ module Make (V : Venue.S) = struct
       if List.is_empty plan
       then return ()
       else (
+        Option.iter book_at ~f:(fun at ->
+          Latency_histogram.record t.latency (Time_ns.diff (now t) at));
         let%bind () = execute t plan in
         sync t))
   ;;
@@ -334,6 +340,7 @@ module Make (V : Venue.S) = struct
   ;;
 
   let on_book t (book : L2.t) =
+    if Option.is_none t.book_waiting_since then t.book_waiting_since <- Some (now t);
     t.strategy <- Strategy.on_book t.strategy book;
     step t
   ;;
@@ -402,6 +409,8 @@ module Make (V : Venue.S) = struct
         ; seen_trades = Trade_id.Hash_set.create ()
         ; timers_stop = Ivar.create ()
         ; stopped = Ivar.create ()
+        ; latency = Latency_histogram.create ()
+        ; book_waiting_since = None
         ; strategy = Strategy.create params
         ; account = None
         ; stopping = false
@@ -493,6 +502,8 @@ module Make (V : Venue.S) = struct
       Ivar.fill_if_empty t.stopped report;
       return report)
   ;;
+
+  let tick_to_order t = Latency_histogram.stats t.latency
 
   let first_mid
     ?(time_source = Time_source.wall_clock ())

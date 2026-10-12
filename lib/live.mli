@@ -83,6 +83,12 @@ module Make (V : Venue.S) : sig
   val report : t -> Report.t
   val strategy : t -> Strategy.t
 
+  (** Tick-to-order latency: from the arrival of a book update (on the time source) to the
+      moment the plan it led to is sent, for every plan sent after a book update. The
+      clock starts at the first book since the previous tick, so time spent waiting for
+      the sequencer (a plan or poll in flight) counts. [None] before the first such plan. *)
+  val tick_to_order : t -> Latency_histogram.Stats.t option
+
   (** The mid of the first two-sided book of [symbol] (default timeout 10s). *)
   val first_mid
     :  ?time_source:Time_source.t
