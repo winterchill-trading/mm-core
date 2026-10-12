@@ -346,3 +346,87 @@ let%expect_test "update_params widens the spread on the next tick without a rest
       (Strategy.update_params t { Params.btc with levels = 0 } |> Result.is_error : bool)];
   [%expect {| true |}]
 ;;
+
+(* The mid flips by 10 bps every millisecond from [from] to [until], so every tick
+   replaces the whole ladder; prints the first halt and when quoting resumed after it. *)
+let flip_loop ?(from = 0) ~until venue t =
+  let rec go t i =
+    if i > until
+    then t
+    else (
+      let now = ms i in
+      let bid, ask = if i % 2 = 0 then "99990", "100010" else "100090", "100110" in
+      let before = Strategy.mode t in
+      let t = Strategy.on_book t (book ~time:i ~bid ~ask ()) in
+      let t, plan = Strategy.tick t ~now in
+      Fake_venue.apply venue ~now plan;
+      let t = Strategy.on_open_orders t venue.orders in
+      (match before, Strategy.mode t with
+       | (Running | Pulled _), (Halted _ as mode) ->
+         print_s [%message "halted" ~at_ms:(i : int) (mode : Strategy.Mode.t)]
+       | Halted _, Running -> print_s [%message "resumed" ~at_ms:(i : int)]
+       | _ -> ());
+      go t (i + 1))
+  in
+  go t from
+;;
+
+let%expect_test "a requote burst inside the resync grace period does not trip" =
+  let params = { Params.btc with max_actions_per_sec = 40 } in
+  let venue = Fake_venue.create () in
+  let t = Strategy.on_resync (Strategy.create params) ~now:0 in
+  let t = flip_loop ~until:4_999 venue t in
+  print_s [%sexp (Strategy.mode t : Strategy.Mode.t)];
+  [%expect {| Running |}];
+  (* The same burst carrying on past the grace period trips within a few ticks. *)
+  let t = flip_loop ~from:5_000 ~until:5_100 venue t in
+  ignore (t : Strategy.t);
+  [%expect {| (halted (at_ms 5004) (mode (Halted (Max_action_rate (actions 48))))) |}]
+;;
+
+let%expect_test "the action rate cooldown clears the halt" =
+  let params =
+    { Params.btc with max_actions_per_sec = 40; action_rate_cooldown_ms = Some 2_000 }
+  in
+  let venue = Fake_venue.create () in
+  let t = flip_loop ~until:10 venue (Strategy.create params) in
+  [%expect {| (halted (at_ms 4) (mode (Halted (Max_action_rate (actions 42))))) |}];
+  (* Calm books: still halted until 2s after the trip, then quoting again. *)
+  let rec calm t i =
+    if i > 3_000
+    then t
+    else (
+      let before = Strategy.mode t in
+      let t = Strategy.on_book t (book ~time:i ~bid:"99990" ~ask:"100010" ()) in
+      let t, plan = Strategy.tick t ~now:(ms i) in
+      Fake_venue.apply venue ~now:(ms i) plan;
+      let t = Strategy.on_open_orders t venue.orders in
+      (match before, Strategy.mode t with
+       | Halted _, Running ->
+         print_s [%message "resumed" ~at_ms:(i : int)];
+         summarize plan
+       | _ -> ());
+      calm t (i + 100))
+  in
+  let t = calm t 100 in
+  print_s [%sexp (Strategy.mode t : Strategy.Mode.t)];
+  [%expect {|
+    (resumed (at_ms 2100))
+    keep=0 cancel=0 place=6
+    Running
+    |}]
+;;
+
+let%expect_test "without a cooldown the action rate halt is permanent" =
+  let params = { Params.btc with max_actions_per_sec = 40 } in
+  let venue = Fake_venue.create () in
+  let t = flip_loop ~until:10 venue (Strategy.create params) in
+  let t = Strategy.on_book t (book ~time:60_000 ~bid:"99990" ~ask:"100010" ()) in
+  let t, _ = Strategy.tick t ~now:(ms 60_000) in
+  print_s [%sexp (Strategy.mode t : Strategy.Mode.t)];
+  [%expect
+    {|
+    (halted (at_ms 4) (mode (Halted (Max_action_rate (actions 42)))))
+    (Halted (Max_action_rate (actions 42)))
+    |}]
+;;
