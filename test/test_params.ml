@@ -112,3 +112,40 @@ let%expect_test "NaN or infinity in any float field fails validation" =
     flatten_slippage_bps = inf: "flatten_slippage_bps must be finite"
     |}]
 ;;
+
+let%expect_test "action rate grace and cooldown: printed only when not the default" =
+  let fields t =
+    match Params.sexp_of_t t with
+    | List fields ->
+      List.filter fields ~f:(function
+        | List (Atom ("action_rate_grace_ms" | "action_rate_cooldown_ms") :: _) -> true
+        | _ -> false)
+    | Atom _ -> []
+  in
+  print_s [%sexp (fields Params.btc : Sexp.t list)];
+  [%expect {| () |}];
+  let t =
+    { Params.btc with
+      action_rate_grace_ms = 2_000
+    ; action_rate_cooldown_ms = Some 30_000
+    }
+  in
+  print_s [%sexp (fields t : Sexp.t list)];
+  [%expect {| ((action_rate_grace_ms 2000) (action_rate_cooldown_ms 30000)) |}];
+  print_s [%sexp (Params.equal t (Params.t_of_sexp (Params.sexp_of_t t)) : bool)];
+  [%expect {| true |}];
+  print_s
+    [%sexp
+      (Params.validate
+         { Params.btc with action_rate_grace_ms = -1; action_rate_cooldown_ms = Some 0 }
+       |> Result.map ~f:(fun (_ : Params.t) -> ())
+       : unit Or_error.t)];
+  [%expect
+    {|
+    (Error
+     ("invalid params"
+      (errors
+       ("action_rate_grace_ms must be non-negative"
+        "action_rate_cooldown_ms must be positive"))))
+    |}]
+;;
