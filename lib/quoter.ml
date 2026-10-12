@@ -64,46 +64,114 @@ let level_sizes (p : Params.t) ~room =
   if Size.is_positive room then go 0 room [] else []
 ;;
 
-let quote (p : Params.t) market inventory =
-  match model p market inventory with
-  | None -> []
-  | Some m ->
-    let x = Inventory.position inventory in
-    let distance level =
-      m.half_spread_bps +. (Float.of_int level *. p.level_spacing_bps)
-    in
-    let best_bid = Market_state.best_bid market in
-    let best_ask = Market_state.best_ask market in
-    let bids =
-      level_sizes p ~room:Size.(m.capacity - x)
-      |> List.folding_mapi ~init:None ~f:(fun level prev sz ->
+module Rung = struct
+  type t =
+    { side : Side.t
+    ; level : int
+    ; distance_bps : float
+    ; target : Price.t
+    ; rounded : Price.t
+    ; px : Price.t
+    ; sz : Size.t
+    }
+  [@@deriving sexp_of]
+end
+
+module Unquoted = struct
+  type t =
+    | No_book
+    | At_limit of
+        { position : Size.t
+        ; capacity : Size.t
+        }
+    | Room_below_lot of { room : Size.t }
+    | Non_positive_price
+  [@@deriving sexp, compare, equal]
+end
+
+(* The ladder of one side: each rung's price terms, before dropping non-positive prices. *)
+let rungs (p : Params.t) (m : Model.t) ~best_bid ~best_ask ~sizes (side : Side.t) =
+  let distance level = m.half_spread_bps +. (Float.of_int level *. p.level_spacing_bps) in
+  List.folding_mapi sizes ~init:None ~f:(fun level prev sz ->
+    let distance_bps = distance level in
+    let rung =
+      match side with
+      | Buy ->
+        let target = Fx.shift_bps m.reservation (-.distance_bps) in
+        let rounded = Fx.price_floor target ~tick:p.tick in
         let px =
-          Fx.price_floor (Fx.shift_bps m.reservation (-.distance level)) ~tick:p.tick
-        in
-        let px =
-          Option.fold best_ask ~init:px ~f:(fun px ask ->
+          Option.fold best_ask ~init:rounded ~f:(fun px ask ->
             Price.min px Price.(ask - p.tick))
         in
         let px =
           Option.fold prev ~init:px ~f:(fun px prev -> Price.min px Price.(prev - p.tick))
         in
-        Some px, { Quote.side = Buy; level; px; sz })
-      |> List.filter ~f:(fun (q : Quote.t) -> Price.is_positive q.px)
-    in
-    let asks =
-      level_sizes p ~room:Size.(m.capacity + x)
-      |> List.folding_mapi ~init:None ~f:(fun level prev sz ->
+        { Rung.side; level; distance_bps; target; rounded; px; sz }
+      | Sell ->
+        let target = Fx.shift_bps m.reservation distance_bps in
+        let rounded = Fx.price_ceil target ~tick:p.tick in
         let px =
-          Fx.price_ceil (Fx.shift_bps m.reservation (distance level)) ~tick:p.tick
-        in
-        let px =
-          Option.fold best_bid ~init:px ~f:(fun px bid ->
+          Option.fold best_bid ~init:rounded ~f:(fun px bid ->
             Price.max px Price.(bid + p.tick))
         in
         let px =
           Option.fold prev ~init:px ~f:(fun px prev -> Price.max px Price.(prev + p.tick))
         in
-        Some px, { Quote.side = Sell; level; px; sz })
+        { Rung.side; level; distance_bps; target; rounded; px; sz }
     in
-    bids @ asks
+    Some rung.px, rung)
 ;;
+
+let room (m : Model.t) ~position (side : Side.t) =
+  match side with
+  | Buy -> Size.(m.capacity - position)
+  | Sell -> Size.(m.capacity + position)
+;;
+
+(* Quotes of one side, or why there are none. *)
+let side_ladder (p : Params.t) (m : Model.t) market ~position side =
+  let room = room m ~position side in
+  let sizes = level_sizes p ~room in
+  let rungs =
+    rungs
+      p
+      m
+      ~best_bid:(Market_state.best_bid market)
+      ~best_ask:(Market_state.best_ask market)
+      ~sizes
+      side
+  in
+  let quotes =
+    List.filter_map rungs ~f:(fun (r : Rung.t) ->
+      Option.some_if
+        (Price.is_positive r.px)
+        { Quote.side = r.side; level = r.level; px = r.px; sz = r.sz })
+  in
+  let reason : Unquoted.t option =
+    if not (List.is_empty quotes)
+    then None
+    else if not (Size.is_positive room)
+    then Some (At_limit { position; capacity = m.capacity })
+    else if List.is_empty rungs
+    then Some (Room_below_lot { room })
+    else Some Non_positive_price
+  in
+  rungs, quotes, reason
+;;
+
+let quote_with_reasons (p : Params.t) market inventory =
+  match model p market inventory with
+  | None -> [], [ Side.Buy, Unquoted.No_book; Sell, No_book ]
+  | Some m ->
+    let position = Inventory.position inventory in
+    let _, bids, bid_reason = side_ladder p m market ~position Buy in
+    let _, asks, ask_reason = side_ladder p m market ~position Sell in
+    ( bids @ asks
+    , List.filter_opt
+        [ Option.map bid_reason ~f:(fun r -> Side.Buy, r)
+        ; Option.map ask_reason ~f:(fun r -> Side.Sell, r)
+        ] )
+;;
+
+let quote p market inventory = fst (quote_with_reasons p market inventory)
+let unquoted p market inventory = snd (quote_with_reasons p market inventory)

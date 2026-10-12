@@ -38,3 +38,27 @@ val model : Params.t -> Market_state.t -> Inventory.t -> Model.t option
 
 (** Bids (level order) followed by asks (level order). Empty without a two-sided book. *)
 val quote : Params.t -> Market_state.t -> Inventory.t -> Quote.t list
+
+(** Why a side has no quotes. *)
+module Unquoted : sig
+  type t =
+    | No_book (** no two-sided book *)
+    | At_limit of
+        { position : Size.t
+        ; capacity : Size.t
+        } (** the side would take [|position|] past [capacity] *)
+    | Room_below_lot of { room : Size.t } (** the room left is less than one lot *)
+    | Non_positive_price
+    (** every rung priced at or below zero (a bid far from the mid) *)
+  [@@deriving sexp, compare, equal]
+end
+
+(** [quote], and a reason for each side left without quotes. *)
+val quote_with_reasons
+  :  Params.t
+  -> Market_state.t
+  -> Inventory.t
+  -> Quote.t list * (Side.t * Unquoted.t) list
+
+(** Only the reasons of [quote_with_reasons]. *)
+val unquoted : Params.t -> Market_state.t -> Inventory.t -> (Side.t * Unquoted.t) list
