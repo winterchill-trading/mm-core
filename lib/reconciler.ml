@@ -7,7 +7,7 @@ let cloid ~symbol ~(side : Side.t) ~level ~generation =
   if level < 0 || level > 255
   then raise_s [%message "Reconciler.cloid: level out of range" (level : int)];
   let name = Symbol.to_string symbol in
-  let coin_hex =
+  let symbol_hex =
     String.init 8 ~f:(fun i -> if i < String.length name then name.[i] else '\000')
     |> String.concat_map ~f:(fun c -> sprintf "%02x" (Char.to_int c))
   in
@@ -19,7 +19,7 @@ let cloid ~symbol ~(side : Side.t) ~level ~generation =
   Client_order_id.of_string
     (sprintf
        "0x%s%02x%02x%012x"
-       coin_hex
+       symbol_hex
        side_byte
        level
        (generation land 0xffff_ffff_ffff))
