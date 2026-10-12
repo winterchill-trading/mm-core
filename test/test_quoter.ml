@@ -204,3 +204,113 @@ let%expect_test "explain a long position" =
         L2 0.001 @ 100014: distance 11.0000 bps, target 100013.8944, on tick 100014
     |}]
 ;;
+
+(* One fixed situation (mid at the instrument's price, a spread of 4 ticks, long 40% of
+   the position limit, volatility 2 bps) under the parameters each preset builds. *)
+let%expect_test "quotes under each parameter preset" =
+  let presets =
+    [ "btc", Params.btc, "100000"
+    ; ( "BTCUSDT tick 0.1, min notional 100"
+      , Params.for_instrument
+          ~min_notional:(Usd.of_int 100)
+          (Instrument.create
+             (Symbol.of_string "BTCUSDT")
+             ~size_decimals:3
+             ~price_tick:(Price.of_string "0.1")
+             ~max_leverage:20)
+          ~mid:(px "100000")
+      , "100000" )
+    ; ( "ETH tick 0.01"
+      , Params.for_instrument
+          (Instrument.create
+             (Symbol.of_string "ETH")
+             ~size_decimals:3
+             ~price_tick:(Price.of_string "0.01")
+             ~max_leverage:20)
+          ~mid:(px "3000")
+      , "3000" )
+    ; ( "1000PEPE tick 0.0000001"
+      , Params.for_instrument
+          (Instrument.create
+             (Symbol.of_string "1000PEPE")
+             ~size_decimals:0
+             ~price_tick:(Price.of_string "0.0000001")
+             ~max_leverage:10)
+          ~mid:(px "0.0123456")
+      , "0.0123456" )
+    ]
+  in
+  List.iter presets ~f:(fun (name, (p : Params.t), mid) ->
+    let mid = px mid in
+    let two_ticks = Price.scale p.tick ~by:2 in
+    let book : L2.t =
+      { symbol = p.symbol
+      ; time = 0
+      ; bids = [ { px = Price.(mid - two_ticks); sz = Size.of_int 10; n = 1 } ]
+      ; asks = [ { px = Price.(mid + two_ticks); sz = Size.of_int 10; n = 1 } ]
+      }
+    in
+    let market =
+      Market_state.with_vol_bps
+        (Market_state.on_book (Market_state.create ~vol_window:p.vol_window) book)
+        2.
+    in
+    let long =
+      Fx.size_floor (Size.of_float (0.4 *. Size.to_float p.max_position)) ~lot:p.lot
+    in
+    let inv =
+      Inventory.on_fill
+        Inventory.empty
+        { (fill ~tid:1 ~side:Buy ~px:"1" ~sz:"1" ()) with
+          symbol = p.symbol
+        ; px = mid
+        ; size = long
+        }
+    in
+    let quotes, reasons = Quoter.quote_with_reasons p market inv in
+    printf
+      "%s: order %s, max position %s, long %s\n"
+      name
+      (Size.to_string p.order_size)
+      (Size.to_string p.max_position)
+      (Size.to_string long);
+    List.iter quotes ~f:(fun (q : Quote.t) ->
+      printf
+        "  %s L%d %s @ %s\n"
+        (if Side.is_buy q.side then "bid" else "ask")
+        q.level
+        (Size.to_string q.sz)
+        (Price.to_string q.px));
+    List.iter reasons ~f:(fun r -> print_s [%sexp (r : Side.t * Quoter.Unquoted.t)]));
+  [%expect
+    {|
+    btc: order 0.001, max position 0.01, long 0.004
+      bid L0 0.001 @ 99936
+      bid L1 0.001 @ 99916
+      bid L2 0.001 @ 99896
+      ask L0 0.001 @ 100016
+      ask L1 0.001 @ 100036
+      ask L2 0.001 @ 100056
+    BTCUSDT tick 0.1, min notional 100: order 0.002, max position 0.02, long 0.008
+      bid L0 0.002 @ 99936
+      bid L1 0.002 @ 99916
+      bid L2 0.002 @ 99896
+      ask L0 0.002 @ 100016
+      ask L1 0.002 @ 100036
+      ask L2 0.002 @ 100056
+    ETH tick 0.01: order 0.033, max position 0.33, long 0.132
+      bid L0 0.033 @ 2998.08
+      bid L1 0.033 @ 2997.48
+      bid L2 0.033 @ 2996.88
+      ask L0 0.033 @ 3000.48
+      ask L1 0.033 @ 3001.08
+      ask L2 0.033 @ 3001.68
+    1000PEPE tick 0.0000001: order 8100, max position 81000, long 32400
+      bid L0 8100 @ 0.0123377
+      bid L1 8100 @ 0.0123352
+      bid L2 8100 @ 0.0123327
+      ask L0 8100 @ 0.0123476
+      ask L1 8100 @ 0.0123501
+      ask L2 8100 @ 0.0123526
+    |}]
+;;
