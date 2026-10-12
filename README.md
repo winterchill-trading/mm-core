@@ -22,6 +22,9 @@ executable.
 opam switch create 5.2.0+ox --repos ox=git+https://github.com/oxcaml/opam-repository.git,default
 opam pin add -n fixed-decimal https://github.com/winterchill-trading/fixed-decimal.git
 opam pin add -n exchange-core https://github.com/winterchill-trading/exchange-core.git
+# only for the mm-core-replay package
+opam pin add -n parquet https://github.com/winterchill-trading/parquet.git
+opam pin add -n market-data https://github.com/winterchill-trading/market-data.git
 opam install . --deps-only --with-test
 dune build && dune test
 ```
@@ -157,9 +160,63 @@ and replaces the rest. A changed `requote_interval_ms` re-arms the poll timer, a
 `vol_window` keeps the volatility estimate and smooths it with the new span from then
 on, and a halted strategy stays halted. `Strategy.update_params` is the pure version.
 
-## Strategy
+## Replay
 
-The quoter is a simplified Avellaneda-Stoikov market maker. All spreads are in basis
+The `mm-core-replay` package (library `Mm_core_replay`, binary `mm-core`) runs the
+strategy over recorded market data from
+[market-data](https://github.com/winterchill-trading/market-data). Every L2 update of
+the instrument, from a `Market_data.Replay_feed` over its norm/ event logs, is applied to
+a book; once the book has both sides the strategy sees it and ticks at the update's
+`recv_ts`. There is no exchange: plans are accepted as sent (places rest with order ids
+from 1, cancels remove) and fed back as the next open orders snapshot, and nothing fills,
+so the output shows quoting and requoting only.
+
+```sh
+mm-core replay -norm DIR -symbol binance:BTCUSDT [-params FILE] [-depth 20]
+```
+
+`DIR` is a store root (`<DIR>/<venue>/<symbol>/norm/l2/<day>.bin`); every recorded day is
+replayed. `-symbol` takes `venue:SYMBOL` or a symbol recorded on one venue only. Without
+`-params` the parameters are `Params.for_instrument` at the first mid, with the tick and
+lot of the built-in `Market_data.Instrument_info` catalogue. Over the fixture in
+`replay/test/fixtures` (a copy of market-data's `event-log-v1` Binance log):
+
+```
+2026-01-01T00:00:00.001000000Z bid 99.9 ask 100.1 Running
+  place buy 1 @ 99.9
+  place buy 1 @ 99.8
+  place buy 1 @ 99.7
+  place sell 1 @ 100
+  place sell 1 @ 100.1
+  place sell 1 @ 100.2
+2026-01-01T00:00:00.022000000Z bid 99.8 ask 100.1 Running
+  cancel 4
+  place sell 1 @ 100.3
+  keep 5
+```
+
+`Replay.run feed ~params ~f` is the library form: any `Market_data.Feed.t`, a callback
+per `Replay.Tick.t`, the final strategy returned.
+
+## Timeouts and abandoned work
+
+`with_timeout` only stops waiting; the work it raced keeps running. Every timeout and
+timer in this library was checked for work left behind:
+
+- `Live.first_mid` races its read loop over a fresh `books` reader against `timeout`.
+  Either way the reader is closed right after, which ends a read still pending with
+  `` `Eof ``, so nothing keeps consuming the feed. `test_live_first_mid.ml` checks that
+  no subscription stays open after a timeout and that a later call still answers.
+- `Live.stop_signal ?run_for`: the alarm stays scheduled after a signal stops the run
+  and fills an already full ivar when it fires; harmless.
+- The poll timer and the summary timer stop with the loop (`stop` fills their `stop`
+  ivar); a `stop` before the first summary leaves only the `after` alarm that would have
+  started it.
+- Venue calls (`place`, `cancel`, `open_orders`, `account`, `cancel_all`) have no
+  timeout here: the adapters own them. A venue call that never answers blocks the
+  sequencer, and `stop` waits for it.
+
+ is a simplified Avellaneda-Stoikov market maker. All spreads are in basis
 points (bps) of the price.
 
 ### Market inputs
