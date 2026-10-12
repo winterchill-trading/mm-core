@@ -204,7 +204,9 @@ by trade id.
 | max drawdown / max data age / flatten slippage | 50 USD / 5 s / 50 bps |
 
 `Params.for_instrument instrument ~mid` rescales these to another instrument: about 100
-USD per order (nearest lot), 10 orders of position room and 1.5x that in notional.
+USD per order (nearest lot), 10 orders of position room and 1.5x that in notional. Pass
+the venue's order value minimum as `~min_notional` (100 USD on Binance's BTCUSDT) and the
+order size becomes at least 1.2x that, rounded up to the lot.
 
 ## Tests
 
