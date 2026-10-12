@@ -1,0 +1,6 @@
+(library
+ (name mm_core_replay)
+ (public_name mm-core-replay)
+ (libraries core async exchange-core market-data mm-core)
+ (preprocess
+  (pps ppx_jane)))
