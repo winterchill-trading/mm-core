@@ -230,3 +230,57 @@ let%test_unit "reconciling right after applying a plan yields only keeps" =
         raise_s
           [%message "plan not idempotent" (plan : Action.t list) (again : Action.t list)])
 ;;
+
+let%test_unit "flatten only places reduce-only orders that shrink the position" =
+  let gen =
+    let open Quickcheck.Let_syntax in
+    let%bind c = gen_case in
+    let%map resting = gen_resting c
+    and has_book =
+      Quickcheck.Generator.weighted_union [ 9., return true; 1., return false ]
+    in
+    c, resting, has_book
+  in
+  Quickcheck.test
+    gen
+    ~sexp_of:[%sexp_of: case * Open_order.t list * bool]
+    ~trials:2_000
+    ~f:(fun (c, open_orders, has_book) ->
+      let market =
+        if has_book
+        then
+          Market_state.on_book
+            (Market_state.create ~vol_window:10)
+            { symbol = c.params.symbol
+            ; time = 0
+            ; bids = [ { px = c.bid; sz = c.bid_sz; n = 1 } ]
+            ; asks = [ { px = c.ask; sz = c.ask_sz; n = 1 } ]
+            }
+        else Market_state.create ~vol_window:10
+      in
+      let inventory =
+        if Size.is_zero c.position
+        then Inventory.empty
+        else
+          Inventory.on_fill
+            Inventory.empty
+            { (fill ~tid:1 ~side:Buy ~px:"1" ~sz:"1" ()) with
+              side = (if Size.is_positive c.position then Buy else Sell)
+            ; px = c.bid
+            ; size = Size.abs c.position
+            }
+      in
+      let plan = Risk.flatten c.params ~generation:3 ~open_orders market inventory in
+      List.iter plan ~f:(function
+        | Keep _ | Cancel _ -> ()
+        | Place (r : Order_request.t) ->
+          let after = Size.(c.position + Fx.signed r.side r.size) in
+          if not r.reduce_only
+          then
+            raise_s
+              [%message "flatten places a non reduce-only order" (r : Order_request.t)];
+          if Size.(abs after > abs c.position)
+             || Fx.sign_of_size after * Fx.sign_of_size c.position < 0
+          then
+            raise_s [%message "flatten grows or flips the position" (r : Order_request.t)]))
+;;
