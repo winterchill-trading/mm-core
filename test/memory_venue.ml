@@ -4,38 +4,95 @@ open Exchange_core
 open Mm_core
 open Helpers
 
-type config = unit
+module Bugs = struct
+  type t =
+    { seed : int
+    ; reject_percent : int
+    ; cancel_ack_delay : Time_ns.Span.t
+    ; split_fills : int
+    ; stale_poll_percent : int
+    ; late_places : int
+    ; late_place_delay : Time_ns.Span.t
+    }
+  [@@deriving sexp_of]
+
+  let none =
+    { seed = 0
+    ; reject_percent = 0
+    ; cancel_ack_delay = Time_ns.Span.zero
+    ; split_fills = 1
+    ; stale_poll_percent = 0
+    ; late_places = 0
+    ; late_place_delay = Time_ns.Span.zero
+    }
+  ;;
+end
+
+module Injected = struct
+  type t =
+    { rejects : int
+    ; late_cancels : int
+    ; split_fills : int
+    ; stale_polls : int
+    ; late_places : int
+    }
+  [@@deriving sexp_of]
+end
+
+type config = Bugs.t
 
 type t =
-  { mutable orders : Open_order.t list
+  { bugs : Bugs.t
+  ; random : Random.State.t
+  ; mutable injected : Injected.t
+  ; mutable orders : Open_order.t list
+  ; mutable last_snapshot : Open_order.t list
   ; mutable next_oid : int
+  ; mutable places : int
   ; mutable book_writers : L2.t Pipe.Writer.t list
   ; mutable reconnect_hooks : (unit -> unit) list
   ; fills_r : Fill.t Pipe.Reader.t
   ; fills_w : Fill.t Pipe.Writer.t
   ; updates_r : Order_update.t Pipe.Reader.t
   ; updates_w : Order_update.t Pipe.Writer.t
+  ; seen_trades : Trade_id.Hash_set.t
   ; mutable closed : bool
-  ; mutable position : (Size.t * Price.t) option
+  ; mutable position : Size.t
+  ; mutable entry : Price.t option
   }
 
-let connect () =
+let connect (bugs : Bugs.t) =
   let fills_r, fills_w = Pipe.create () in
   let updates_r, updates_w = Pipe.create () in
   return
     (Ok
-       { orders = []
+       { bugs
+       ; random = Random.State.make [| bugs.seed |]
+       ; injected =
+           { rejects = 0
+           ; late_cancels = 0
+           ; split_fills = 0
+           ; stale_polls = 0
+           ; late_places = 0
+           }
+       ; orders = []
+       ; last_snapshot = []
        ; next_oid = 0
+       ; places = 0
        ; book_writers = []
        ; reconnect_hooks = []
        ; fills_r
        ; fills_w
        ; updates_r
        ; updates_w
+       ; seen_trades = Trade_id.Hash_set.create ()
        ; closed = false
-       ; position = None
+       ; position = Size.zero
+       ; entry = None
        })
 ;;
+
+let percent t p = p > 0 && Random.State.int t.random 100 < p
 
 let instrument _ symbol =
   return
@@ -53,14 +110,60 @@ let push_book t book =
   List.iter t.book_writers ~f:(fun w -> Pipe.write_without_pushback w book)
 ;;
 
+let deliver_fill t (fill : Fill.t) =
+  if not (Hash_set.mem t.seen_trades fill.trade_id)
+  then (
+    Hash_set.add t.seen_trades fill.trade_id;
+    if Option.is_none t.entry then t.entry <- Some fill.px;
+    t.position <- Size.(t.position + Fx.signed fill.side fill.size));
+  if not (Pipe.is_closed t.fills_w) then Pipe.write_without_pushback t.fills_w fill
+;;
+
+(* Cuts [size] into [n] positive lot multiples (fewer if it is too small). *)
+let split_size t size ~n =
+  let lot = Size.to_units (Size.of_string "0.00001") in
+  let lots = Size.to_units size / lot in
+  let n = Int.max 1 (Int.min n lots) in
+  let cuts =
+    List.init (n - 1) ~f:(fun _ -> 1 + Random.State.int t.random (lots - 1))
+    |> List.dedup_and_sort ~compare:Int.compare
+  in
+  let bounds = (0 :: cuts) @ [ lots ] in
+  List.zip_exn (List.drop_last_exn bounds) (List.tl_exn bounds)
+  |> List.map ~f:(fun (a, b) -> Size.of_units ((b - a) * lot))
+;;
+
 let push_fill t (fill : Fill.t) =
-  if Option.is_none t.position then t.position <- Some (fill.size, fill.px);
-  Pipe.write_without_pushback t.fills_w fill
+  let n =
+    if t.bugs.split_fills > 1 then 1 + Random.State.int t.random t.bugs.split_fills else 1
+  in
+  match split_size t fill.size ~n with
+  | [ _ ] | [] -> deliver_fill t fill
+  | parts ->
+    t.injected <- { t.injected with split_fills = t.injected.split_fills + 1 };
+    let total = Size.to_float fill.size in
+    List.iteri parts ~f:(fun i size ->
+      deliver_fill
+        t
+        { fill with
+          trade_id = Trade_id.of_int ((Trade_id.to_int fill.trade_id * 100) + i)
+        ; size
+        ; fee = Usd.of_float (Usd.to_float fill.fee *. Size.to_float size /. total)
+        })
 ;;
 
 let fills t = t.fills_r
 let order_updates t = t.updates_r
-let open_orders t _ = return (Ok t.orders)
+
+let open_orders t _ =
+  if percent t t.bugs.stale_poll_percent
+  then (
+    t.injected <- { t.injected with stale_polls = t.injected.stale_polls + 1 };
+    return (Ok t.last_snapshot))
+  else (
+    t.last_snapshot <- t.orders;
+    return (Ok t.orders))
+;;
 
 let account t =
   return
@@ -73,67 +176,96 @@ let account t =
        ; maintenance_margin = Usd.zero
        ; available = usd "1000"
        ; positions =
-           Option.to_list t.position
-           |> List.map ~f:(fun (size, entry_px) : Position_view.t ->
-             { symbol = btc
-             ; size
-             ; entry_px
-             ; notional = Fx.notional entry_px size
-             ; unrealized_pnl = Usd.zero
-             ; realized_pnl = Usd.zero
-             ; cum_funding = Usd.zero
-             ; liquidation_px = None
-             ; leverage = 20
-             ; max_leverage = 40
-             ; margin_used = Usd.zero
-             })
+           (match t.entry with
+            | Some entry_px when not (Size.is_zero t.position) ->
+              [ { Position_view.symbol = btc
+                ; size = t.position
+                ; entry_px
+                ; notional = Fx.notional entry_px (Size.abs t.position)
+                ; unrealized_pnl = Usd.zero
+                ; realized_pnl = Usd.zero
+                ; cum_funding = Usd.zero
+                ; liquidation_px = None
+                ; leverage = 20
+                ; max_leverage = 40
+                ; margin_used = Usd.zero
+                }
+              ]
+            | _ -> [])
        ; time = 0
        })
 ;;
 
-let place t requests =
-  return
-    (Ok
-       (List.map requests ~f:(fun (r : Order_request.t) : Order_status.t ->
-          match r.px with
-          | None -> Rejected (Unsupported "no market orders here")
-          | Some px ->
-            t.next_oid <- t.next_oid + 1;
-            let order_id = Order_id.of_int t.next_oid in
-            t.orders
-            <- t.orders
-               @ [ { symbol = r.symbol
-                   ; side = r.side
-                   ; px
-                   ; size = r.size
-                   ; orig_size = Some r.size
-                   ; order_id
-                   ; client_order_id = r.client_order_id
-                   ; timestamp = Time_ns.to_int_ns_since_epoch (Time_ns.now ())
-                   }
-                 ];
-            Resting { order_id; client_order_id = r.client_order_id })))
+let rest t (r : Order_request.t) ~px =
+  t.next_oid <- t.next_oid + 1;
+  let order_id = Order_id.of_int t.next_oid in
+  t.orders
+  <- t.orders
+     @ [ { symbol = r.symbol
+         ; side = r.side
+         ; px
+         ; size = r.size
+         ; orig_size = Some r.size
+         ; order_id
+         ; client_order_id = r.client_order_id
+         ; timestamp = Time_ns.to_int_ns_since_epoch (Time_ns.now ())
+         }
+       ];
+  order_id
 ;;
 
-let cancel t _symbol oids =
+let place t requests =
+  t.places <- t.places + 1;
+  if t.places <= t.bugs.late_places
+  then (
+    t.injected <- { t.injected with late_places = t.injected.late_places + 1 };
+    upon (Clock_ns.after t.bugs.late_place_delay) (fun () ->
+      List.iter requests ~f:(fun (r : Order_request.t) ->
+        Option.iter r.px ~f:(fun px -> ignore (rest t r ~px : Order_id.t))));
+    return (Or_error.error_string "place: timed out"))
+  else
+    return
+      (Ok
+         (List.map requests ~f:(fun (r : Order_request.t) : Order_status.t ->
+            match r.px with
+            | None -> Rejected (Unsupported "no market orders here")
+            | Some _ when percent t t.bugs.reject_percent ->
+              t.injected <- { t.injected with rejects = t.injected.rejects + 1 };
+              Rejected Insufficient_margin
+            | Some px ->
+              let order_id = rest t r ~px in
+              Resting { order_id; client_order_id = r.client_order_id })))
+;;
+
+let remove t oids =
   let gone, kept =
     List.partition_tf t.orders ~f:(fun o ->
       List.mem oids o.order_id ~equal:Order_id.equal)
   in
   t.orders <- kept;
   List.iter gone ~f:(fun (o : Open_order.t) ->
-    Pipe.write_without_pushback
-      t.updates_w
-      { order_id = o.order_id
-      ; client_order_id = o.client_order_id
-      ; symbol = o.symbol
-      ; side = o.side
-      ; px = o.px
-      ; status = Cancelled
-      ; filled = Size.zero
-      ; remaining = Size.zero
-      ; time = 0
-      });
+    if not (Pipe.is_closed t.updates_w)
+    then
+      Pipe.write_without_pushback
+        t.updates_w
+        { order_id = o.order_id
+        ; client_order_id = o.client_order_id
+        ; symbol = o.symbol
+        ; side = o.side
+        ; px = o.px
+        ; status = Cancelled
+        ; filled = Size.zero
+        ; remaining = Size.zero
+        ; time = 0
+        })
+;;
+
+let cancel t _symbol oids =
+  if Time_ns.Span.(t.bugs.cancel_ack_delay > zero)
+  then (
+    t.injected <- { t.injected with late_cancels = t.injected.late_cancels + 1 };
+    upon (Clock_ns.after t.bugs.cancel_ack_delay) (fun () -> remove t oids))
+  else remove t oids;
   return (Ok ())
 ;;
 
@@ -149,4 +281,5 @@ let close t =
 ;;
 
 let orders t = t.orders
+let injected t = t.injected
 let is_closed t = t.closed

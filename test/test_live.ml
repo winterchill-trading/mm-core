@@ -24,7 +24,7 @@ let live_book () =
 
 let%expect_test "the live loop quotes, applies fills and cancels on stop" =
   Log.Global.set_output [];
-  let%bind venue = Memory_venue.connect () >>| ok_exn in
+  let%bind venue = Memory_venue.connect Memory_venue.Bugs.none >>| ok_exn in
   let%bind instrument = Memory_venue.instrument venue btc >>| ok_exn in
   let mid =
     don't_wait_for
