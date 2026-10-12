@@ -175,3 +175,87 @@ let quote_with_reasons (p : Params.t) market inventory =
 
 let quote p market inventory = fst (quote_with_reasons p market inventory)
 let unquoted p market inventory = snd (quote_with_reasons p market inventory)
+
+module For_testing = struct
+  let explain (p : Params.t) market inventory =
+    let buf = Buffer.create 1024 in
+    let line indent fmt =
+      ksprintf
+        (fun s -> Buffer.add_string buf (String.make (2 * indent) ' ' ^ s ^ "\n"))
+        fmt
+    in
+    let opt = Option.value_map ~default:"-" ~f:Price.to_string in
+    let position = Inventory.position inventory in
+    line 0 "quote";
+    line
+      1
+      "position %s (target %s)"
+      (Size.to_string position)
+      (Size.to_string p.inventory_target);
+    line
+      1
+      "book bid %s ask %s"
+      (opt (Market_state.best_bid market))
+      (opt (Market_state.best_ask market));
+    (match model p market inventory with
+     | None -> line 1 "no two-sided book: nothing quoted"
+     | Some m ->
+       let v = p.gamma *. m.vol_bps *. m.vol_bps in
+       line
+         1
+         "mid %s, microprice %s"
+         (Price.to_string m.mid)
+         (Price.to_string m.microprice);
+       line
+         1
+         "vol %.4f bps (estimate %.4f, cap %.4f)"
+         m.vol_bps
+         (Market_state.vol_bps market)
+         p.max_vol_bps;
+       line
+         1
+         "capacity %s = min(max_position %s, max_notional %s / mid), floored to lot %s"
+         (Size.to_string m.capacity)
+         (Size.to_string p.max_position)
+         (Usd.to_string p.max_notional)
+         (Size.to_string p.lot);
+       line 1 "inventory ratio q %.4f" m.inventory_ratio;
+       line 1 "risk term v = gamma %.4f * vol^2 = %.4f bps" p.gamma v;
+       line
+         1
+         "reservation %s = microprice shifted by -q * (skew %.4f + v) = %.4f bps"
+         (Price.to_string m.reservation)
+         p.skew_bps
+         (-.m.inventory_ratio *. (p.skew_bps +. v));
+       line
+         1
+         "half-spread %.4f bps = base %.4f + v / 2"
+         m.half_spread_bps
+         p.base_half_spread_bps;
+       List.iter [ Side.Buy; Sell ] ~f:(fun side ->
+         let rungs, _, reason = side_ladder p m market ~position side in
+         line
+           1
+           "%s: room %s"
+           (match side with
+            | Buy -> "bids"
+            | Sell -> "asks")
+           (Size.to_string (room m ~position side));
+         List.iter rungs ~f:(fun (r : Rung.t) ->
+           line
+             2
+             "L%d %s @ %s: distance %.4f bps, target %s, on tick %s%s"
+             r.level
+             (Size.to_string r.sz)
+             (Price.to_string r.px)
+             r.distance_bps
+             (Price.to_string r.target)
+             (Price.to_string r.rounded)
+             (if Price.equal r.rounded r.px
+              then ""
+              else ", moved off the touch or the level before"));
+         Option.iter reason ~f:(fun reason ->
+           line 2 "not quoted: %s" (Sexp.to_string [%sexp (reason : Unquoted.t)]))));
+    Buffer.contents buf
+  ;;
+end

@@ -62,3 +62,10 @@ val quote_with_reasons
 
 (** Only the reasons of [quote_with_reasons]. *)
 val unquoted : Params.t -> Market_state.t -> Inventory.t -> (Side.t * Unquoted.t) list
+
+module For_testing : sig
+  (** Every term of the computation above as an indented tree: book, model terms, and per
+      side the room and each rung's distance, unrounded target, tick-rounded and final
+      price, then the reason for a side without quotes. *)
+  val explain : Params.t -> Market_state.t -> Inventory.t -> string
+end

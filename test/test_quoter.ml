@@ -158,3 +158,49 @@ let%expect_test "no quotes without a two-sided book" =
        : Quote.t list)];
   [%expect {| () |}]
 ;;
+
+let%expect_test "reasons for sides without quotes" =
+  let reasons ?(params = params) market inv =
+    print_s
+      [%sexp (Quoter.unquoted params market inv : (Side.t * Quoter.Unquoted.t) list)]
+  in
+  reasons (Market_state.create ~vol_window:10) Inventory.empty;
+  [%expect {| ((Buy No_book) (Sell No_book)) |}];
+  reasons (market ()) (inventory "0");
+  [%expect {| () |}];
+  reasons (market ()) (inventory "0.01");
+  [%expect {| ((Buy (At_limit (position 0.01) (capacity 0.01)))) |}];
+  reasons (market ()) (inventory "-0.009999");
+  [%expect {| ((Sell (Room_below_lot (room 0.000001)))) |}];
+  (* A half-spread of 100% puts every bid at zero. *)
+  reasons
+    ~params:{ params with base_half_spread_bps = 10_000. }
+    (market ())
+    (inventory "0");
+  [%expect {| ((Buy Non_positive_price)) |}]
+;;
+
+let%expect_test "explain a long position" =
+  print_string
+    (Quoter.For_testing.explain params (market ~vol_bps:4. ()) (inventory "0.008"));
+  [%expect
+    {|
+    quote
+      position 0.008 (target 0)
+      book bid 99900 ask 100100
+      mid 100000, microprice 100000
+      vol 4.0000 bps (estimate 4.0000, cap 10.0000)
+      capacity 0.01 = min(max_position 0.01, max_notional 1500 / mid), floored to lot 0.00001
+      inventory ratio q 0.8000
+      risk term v = gamma 0.5000 * vol^2 = 8.0000 bps
+      reservation 99904 = microprice shifted by -q * (skew 4.0000 + v) = -9.6000 bps
+      half-spread 7.0000 bps = base 3.0000 + v / 2
+      bids: room 0.002
+        L0 0.001 @ 99834: distance 7.0000 bps, target 99834.0672, on tick 99834
+        L1 0.001 @ 99814: distance 9.0000 bps, target 99814.0864, on tick 99814
+      asks: room 0.018
+        L0 0.001 @ 99974: distance 7.0000 bps, target 99973.9328, on tick 99974
+        L1 0.001 @ 99994: distance 9.0000 bps, target 99993.9136, on tick 99994
+        L2 0.001 @ 100014: distance 11.0000 bps, target 100013.8944, on tick 100014
+    |}]
+;;
