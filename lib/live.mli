@@ -124,9 +124,15 @@ module Make (V : Venue.S) : sig
 
   (** Connects, fetches the instrument and its first mid, builds the parameters with
       [params], then {!start}. Returns the running loop: a handle for {!update_params},
-      {!report}, {!tick_to_order} and {!stop}. Closes the venue on every error path. *)
+      {!report}, {!tick_to_order} and {!stop}. Closes the venue on every error path.
+
+      [on_venue] runs once, right after the connection and before the instrument and first
+      mid are fetched, so observers can attach to the venue (subscribe to its feeds,
+      register [on_reconnect] hooks) before the loop starts. An exception it raises
+      becomes the returned error. *)
   val connect_and_start
     :  ?time_source:Time_source.t
+    -> ?on_venue:(V.t -> unit)
     -> V.config
     -> symbol:Symbol.t
     -> params:(Instrument.t -> mid:Price.t -> Params.t Or_error.t)
@@ -136,6 +142,7 @@ module Make (V : Venue.S) : sig
   (** {!connect_and_start}, wait for [stop], then {!stop}. Closes the venue on every path. *)
   val connect_and_run
     :  ?time_source:Time_source.t
+    -> ?on_venue:(V.t -> unit)
     -> V.config
     -> symbol:Symbol.t
     -> params:(Instrument.t -> mid:Price.t -> Params.t Or_error.t)
