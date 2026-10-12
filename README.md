@@ -123,6 +123,14 @@ Live_hl.connect_and_run config ~symbol
 - `start` and `connect_and_start` return the running loop; `update_params`, `report`,
   `tick_to_order` and `stop` take that handle. `run` and `connect_and_run` wrap them and
   wait for a stop deferred.
+- `connect_and_start ?on_venue` (and `connect_and_run`) calls `on_venue` with the venue
+  right after connecting, before the first mid is fetched and the loop starts, so
+  observers can subscribe to its feeds or register `on_reconnect` hooks without dropping
+  down to `start`. An exception it raises is returned as the error and closes the venue.
+- `on_resync live ~f` registers a hook run on every venue reconnect, right after the loop
+  has called `Strategy.on_resync` on its own strategy. Mirror strategies (a shadow
+  strategy, a strategy log replay) call `Strategy.on_resync` on their copy there, so they
+  start the same action rate grace period at the same time.
 - `start`, `connect_and_start`, `run`, `connect_and_run`, `first_mid` and `stop_signal` take an optional
   `?time_source` (default the wall clock). With `Time_source.create` a whole run is driven
   by `advance_by_alarms`, as the property and latency tests do.
