@@ -25,6 +25,8 @@ type t =
   ; max_actions_per_sec : int [@default 100]
   ; soft_max_position : Size.t option [@default None]
   ; bump_budget : Size.t [@default Size.zero]
+  ; action_rate_grace_ms : int [@default 5_000] [@sexp_drop_default.equal]
+  ; action_rate_cooldown_ms : int option [@sexp.option]
   }
 [@@deriving sexp, compare, equal]
 
@@ -52,6 +54,8 @@ let btc =
   ; max_actions_per_sec = 100
   ; soft_max_position = None
   ; bump_budget = Size.zero
+  ; action_rate_grace_ms = 5_000
+  ; action_rate_cooldown_ms = None
   }
 ;;
 
@@ -125,6 +129,8 @@ let validate t =
       ; max_actions_per_sec
       ; soft_max_position
       ; bump_budget
+      ; action_rate_grace_ms
+      ; action_rate_cooldown_ms
       }
     =
     t
@@ -168,6 +174,9 @@ let validate t =
             Size.is_positive soft && Size.(soft <= max_position))
         , "soft_max_position must be in (0, max_position]" )
       ; not (Size.is_negative bump_budget), "bump_budget must be non-negative"
+      ; action_rate_grace_ms >= 0, "action_rate_grace_ms must be non-negative"
+      ; ( Option.for_all action_rate_cooldown_ms ~f:(fun ms -> ms > 0)
+        , "action_rate_cooldown_ms must be positive" )
       ]
   in
   match List.filter_map checks ~f:(fun (ok, msg) -> Option.some_if (not ok) msg) with

@@ -44,12 +44,22 @@ type t =
   ; bump_budget : Size.t
   (** how much, in total over a run, fills may take the position past [soft_max_position]
       while the growing side keeps quoting (absent in a sexp: 0) *)
+  ; action_rate_grace_ms : int
+  (** after a venue resync ({!Strategy.on_resync}) the actions of this long are neither
+      counted nor checked against [max_actions_per_sec], so the requote burst of a
+      reconnect cannot trip the kill switch (absent in a sexp: 5000, and omitted when
+      printing at that value) *)
+  ; action_rate_cooldown_ms : int option
+  (** when set, a [Max_action_rate] halt clears this long after it tripped and the
+      strategy quotes again; other halts stay permanent (absent in a sexp: none, the halt
+      is permanent) *)
   }
 [@@deriving sexp, compare, equal]
 
 (** Defaults for BTC perpetuals around 100k (integer tick, 5 size decimals): 3 levels of
     0.001 BTC, 3 bps half-spread, 2 bps spacing, 0.01 BTC / 1500 USD position limit,
-    volatility capped at 10 bps, 50 USD drawdown limit, at most 100 actions per second. *)
+    volatility capped at 10 bps, 50 USD drawdown limit, at most 100 actions per second
+    outside a 5 s grace period after a resync, no action rate cooldown. *)
 val btc : t
 
 (** [btc] rescaled to an instrument trading around [mid]: symbol, [tick] (default the
