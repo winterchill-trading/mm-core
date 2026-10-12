@@ -4,7 +4,8 @@
     - [Venue.open_orders] and [Venue.account] are polled every [requote_interval_ms],
       after every executed plan (the strategy waits for that snapshot before placing
       again), when an order update reports an order leaving the book, and after a
-      reconnect.
+      reconnect. A reconnect also starts the action rate grace period
+      ({!Strategy.on_resync}).
     - [Strategy.tick] runs after every book update, fill and poll. A non-empty plan is
       sent as at most two venue calls: one [cancel] with every cancel, then one [place]
       with every place.

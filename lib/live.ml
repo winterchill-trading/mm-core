@@ -460,6 +460,7 @@ module Make (V : Venue.S) = struct
       Log.Global.info_s [%message "starting" (params : Params.t)];
       V.on_reconnect venue ~f:(fun () ->
         t.reconnects <- t.reconnects + 1;
+        t.strategy <- Strategy.on_resync t.strategy ~now:(now_ns t);
         Log.Global.info "venue reconnected; resyncing open orders and position";
         request_sync t);
       (* The first snapshot must be in before quoting, so that resting orders from an
