@@ -89,3 +89,25 @@ let%expect_test "update_params moves quotes on the next requote without a cancel
   [%expect {| cancel_all calls after stop: 1 |}];
   return ()
 ;;
+
+let%expect_test "connect_and_start returns the first error and no handle" =
+  Log.Global.set_output [];
+  let ts = Time_source.create ~now:(Time_ns.of_int_ns_since_epoch 0) () in
+  let started =
+    Live_memory.connect_and_start
+      ~time_source:(Time_source.read_only ts)
+      Memory_venue.Bugs.none
+      ~symbol:Params.btc.symbol
+      ~params:(fun _ ~mid:_ -> Ok Params.btc)
+      ~summary_interval:(Time_ns.Span.of_int_sec 60)
+  in
+  let%bind () =
+    Time_source.advance_by_alarms
+      ts
+      ~to_:(Time_ns.of_int_ns_since_epoch (11 * 1_000_000_000))
+  in
+  let%bind started in
+  print_s [%sexp (Result.map started ~f:(fun _ -> ()) : unit Or_error.t)];
+  [%expect {| (Error ("no two-sided book" (symbol BTC) (timeout 10s))) |}];
+  return ()
+;;
