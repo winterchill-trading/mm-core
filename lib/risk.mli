@@ -31,7 +31,10 @@ module Reason : sig
   val is_sticky : t -> bool
 end
 
-(** Cancels and places sent, over a sliding one second window. *)
+(** Cancels and places sent, over a rolling one second window: a queue of (time, count)
+    entries with their running sum. Recording drops expired entries from the front, so
+    both operations are amortised O(1) however many plans a second brings. Times must not
+    go backwards. *)
 module Action_rate : sig
   type t [@@deriving sexp_of]
 

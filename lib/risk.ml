@@ -20,18 +20,34 @@ module Reason = struct
 end
 
 module Action_rate = struct
-  (* Newest first: (time, actions). *)
-  type t = (int * int) list [@@deriving sexp_of]
+  (* Oldest first: (time, actions), with their running sum. *)
+  type t =
+    { entries : (int * int) Fdeque.t
+    ; total : int
+    }
+  [@@deriving sexp_of]
 
-  let empty = []
+  let empty = { entries = Fdeque.empty; total = 0 }
   let window = 1_000_000_000
-  let prune t ~now = List.take_while t ~f:(fun (at, _) -> now - at < window)
 
-  let record t ~now ~actions =
-    if actions <= 0 then prune t ~now else (now, actions) :: prune t ~now
+  let rec prune t ~now =
+    match Fdeque.peek_front t.entries with
+    | Some (at, actions) when now - at >= window ->
+      prune { entries = Fdeque.drop_front_exn t.entries; total = t.total - actions } ~now
+    | Some _ | None -> t
   ;;
 
-  let last_second t ~now = List.sum (module Int) (prune t ~now) ~f:snd
+  let record t ~now ~actions =
+    let t = prune t ~now in
+    if actions <= 0
+    then t
+    else
+      { entries = Fdeque.enqueue_back t.entries (now, actions)
+      ; total = t.total + actions
+      }
+  ;;
+
+  let last_second t ~now = (prune t ~now).total
 end
 
 type t =
