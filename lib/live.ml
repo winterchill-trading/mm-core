@@ -585,6 +585,8 @@ module Make (V : Venue.S) = struct
         Or_error.error_s
           [%message "no two-sided book" (symbol : Symbol.t) (timeout : Time_ns.Span.t)]
     in
+    (* On a timeout [next ()] is still waiting in [Pipe.read]; closing the reader ends
+       that read with [`Eof], so nothing is left consuming the feed. *)
     Pipe.close_read books;
     result
   ;;
