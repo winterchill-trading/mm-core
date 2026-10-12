@@ -25,4 +25,6 @@
   async
   exchange-core
   fixed-decimal
-  ppx_jane))
+  ppx_jane
+  (core_unix :with-test)
+  (core_bench :with-test)))

@@ -16,6 +16,8 @@ depends: [
   "exchange-core"
   "fixed-decimal"
   "ppx_jane"
+  "core_unix" {with-test}
+  "core_bench" {with-test}
   "odoc" {with-doc}
 ]
 build: [
