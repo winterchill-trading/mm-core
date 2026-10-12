@@ -26,6 +26,7 @@ module Bugs : sig
     (** the first [late_places] calls to [place] fail with a timeout, yet their orders
         rest on the book [late_place_delay] later *)
     ; late_place_delay : Time_ns.Span.t
+    ; place_latency : Time_ns.Span.t (** every [place] call takes this long to answer *)
     }
   [@@deriving sexp_of]
 

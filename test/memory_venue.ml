@@ -13,6 +13,7 @@ module Bugs = struct
     ; stale_poll_percent : int
     ; late_places : int
     ; late_place_delay : Time_ns.Span.t
+    ; place_latency : Time_ns.Span.t
     }
   [@@deriving sexp_of]
 
@@ -24,6 +25,7 @@ module Bugs = struct
     ; stale_poll_percent = 0
     ; late_places = 0
     ; late_place_delay = Time_ns.Span.zero
+    ; place_latency = Time_ns.Span.zero
     }
   ;;
 end
@@ -227,6 +229,11 @@ let would_cross t (r : Order_request.t) ~px =
 ;;
 
 let place t requests =
+  let%bind () =
+    if Time_ns.Span.(t.bugs.place_latency > zero)
+    then Time_source.after t.time_source t.bugs.place_latency
+    else return ()
+  in
   t.places <- t.places + 1;
   if t.places <= t.bugs.late_places
   then (

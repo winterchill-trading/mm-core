@@ -96,6 +96,7 @@ let%expect_test "seeded bugs: rejects, late cancel acks, split fills and stale p
     ; stale_poll_percent = 20
     ; late_places = 0
     ; late_place_delay = Time_ns.Span.zero
+    ; place_latency = Time_ns.Span.zero
     }
   in
   let%bind venue, live = start bugs in
