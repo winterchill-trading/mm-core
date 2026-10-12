@@ -144,3 +144,89 @@ let%test_unit "reconciling the ladder against itself is a no-op" =
     if List.exists plan ~f:Action.is_change
     then raise_s [%message "churn" (plan : Action.t list)])
 ;;
+
+(* Resting orders around the ladder: some exact, some a few ticks off, some resized, some
+   on the wrong side or far away. *)
+let gen_resting (c : case) =
+  let open Quickcheck.Let_syntax in
+  let desired = quotes_of c in
+  let%bind n = Int.gen_incl 0 8 in
+  let%map orders =
+    List.gen_with_length
+      n
+      (let%map side = Quickcheck.Generator.of_list [ Side.Buy; Sell ]
+       and anchor = Quickcheck.Generator.of_list (None :: List.map desired ~f:Option.some)
+       and ticks = Int.gen_incl (-40) 40
+       and lots = Int.gen_incl 1 200
+       and age_s = Int.gen_incl 0 120 in
+       let base, side, size =
+         match anchor with
+         | Some (q : Quote.t) ->
+           q.px, q.side, if lots > 150 then Size.scale c.params.lot ~by:lots else q.sz
+         | None -> c.ask, side, Size.scale c.params.lot ~by:lots
+       in
+       let px = Price.(base + scale c.params.tick ~by:ticks) in
+       side, (if Price.is_positive px then px else c.params.tick), size, age_s)
+  in
+  List.mapi orders ~f:(fun i (side, px, size, age_s) ->
+    { (open_order ~oid:i ~side ~px:"1" ~sz:"1" ()) with
+      px
+    ; size
+    ; timestamp = ms (120_000 - (age_s * 1_000))
+    })
+;;
+
+(* What the venue would hold after executing [plan]. *)
+let apply ~now plan open_orders =
+  let cancelled =
+    List.filter_map plan ~f:(function
+      | Action.Cancel oid -> Some oid
+      | Keep _ | Place _ -> None)
+  in
+  let kept =
+    List.filter open_orders ~f:(fun (o : Open_order.t) ->
+      not (List.mem cancelled o.order_id ~equal:Order_id.equal))
+  in
+  let placed =
+    List.filter_mapi plan ~f:(fun i -> function
+      | Action.Place (r : Order_request.t) ->
+        Some
+          ({ symbol = r.symbol
+           ; side = r.side
+           ; px = Option.value_exn r.px
+           ; size = r.size
+           ; orig_size = Some r.size
+           ; order_id = Order_id.of_int (1_000 + i)
+           ; client_order_id = r.client_order_id
+           ; timestamp = now
+           }
+           : Open_order.t)
+      | Keep _ | Cancel _ -> None)
+  in
+  kept @ placed
+;;
+
+let%test_unit "reconciling right after applying a plan yields only keeps" =
+  let gen =
+    let open Quickcheck.Let_syntax in
+    let%bind c = gen_case in
+    let%map resting = gen_resting c in
+    c, resting
+  in
+  Quickcheck.test
+    gen
+    ~sexp_of:[%sexp_of: case * Open_order.t list]
+    ~trials:2_000
+    ~f:(fun (c, open_orders) ->
+      let now = ms 120_000 in
+      let desired = quotes_of c in
+      let plan = Reconciler.reconcile c.params ~now ~generation:1 ~open_orders ~desired in
+      let after = apply ~now plan open_orders in
+      let again =
+        Reconciler.reconcile c.params ~now ~generation:2 ~open_orders:after ~desired
+      in
+      if List.exists again ~f:Action.is_change
+      then
+        raise_s
+          [%message "plan not idempotent" (plan : Action.t list) (again : Action.t list)])
+;;
