@@ -55,6 +55,18 @@ val on_open_orders : t -> Open_order.t list -> t
 val on_account : t -> Account_view.t -> t
 
 val tick : t -> now:int -> t * Action.t list
+
+(** Swaps the parameters of a running strategy, keeping its market state, inventory,
+    resting orders, generation, mode and action history. The next [tick] requotes (unless
+    a plan still awaits its snapshot), so the reconciler keeps the resting orders that
+    still match and replaces the rest; nothing is cancelled wholesale. A halted strategy
+    stays halted. [vol_window] changes restart the volatility estimate's smoothing from
+    the current value.
+
+    Errors, leaving [t] unchanged in the caller's hands, if [Params.validate] fails or the
+    symbol differs. *)
+val update_params : t -> Params.t -> t Or_error.t
+
 val params : t -> Params.t
 val mode : t -> Mode.t
 val market : t -> Market_state.t

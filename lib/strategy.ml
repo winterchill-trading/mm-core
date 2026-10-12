@@ -216,6 +216,24 @@ let tick t ~now =
          emit t ~now plan))
 ;;
 
+let update_params t (params : Params.t) =
+  let%bind.Or_error params = Params.validate params in
+  if not (Symbol.equal params.symbol t.params.symbol)
+  then
+    Or_error.error_s
+      [%message
+        "update_params cannot change the symbol"
+          ~from:(t.params.symbol : Symbol.t)
+          ~to_:(params.symbol : Symbol.t)]
+  else (
+    let market =
+      if params.vol_window = t.params.vol_window
+      then t.market
+      else Market_state.with_vol_window t.market ~vol_window:params.vol_window
+    in
+    Ok { t with params; market; last_plan_at = None })
+;;
+
 let params t = t.params
 let mode t = t.mode
 let market t = t.market

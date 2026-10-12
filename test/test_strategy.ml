@@ -295,3 +295,54 @@ let%expect_test "fills past the soft limit use up the bump budget" =
      (resting_asks 0.003))
     |}]
 ;;
+
+let%expect_test "update_params widens the spread on the next tick without a restart" =
+  let venue = Fake_venue.create () in
+  let t = Strategy.create Params.btc in
+  let t = Strategy.on_book t (book ~time:0 ~bid:"99990" ~ask:"100010" ()) in
+  let t = step venue t ~now:0 in
+  [%expect
+    {|
+    keep=0 cancel=0 place=6
+      buy  0.001 @ 99970
+      buy  0.001 @ 99950
+      buy  0.001 @ 99930
+      sell 0.001 @ 100030
+      sell 0.001 @ 100050
+      sell 0.001 @ 100070
+    Running
+    |}];
+  (* Only the first level moves out by 2 bps; levels two and three stay on their prices
+     from the spacing change, so they are kept. *)
+  let t =
+    Strategy.update_params
+      t
+      { Params.btc with base_half_spread_bps = 5.; level_spacing_bps = 2. }
+    |> ok_exn
+  in
+  let t = step venue t ~now:10 in
+  [%expect
+    {|
+    keep=4 cancel=2 place=2
+      buy  0.001 @ 99910
+      sell 0.001 @ 100090
+    Running
+    |}];
+  print_s
+    [%message
+      ""
+        ~generation:(Strategy.generation t : int)
+        ~half_spread:((Strategy.params t).base_half_spread_bps : float)];
+  [%expect {| ((generation 2) (half_spread 5)) |}];
+  print_s
+    [%sexp
+      (Strategy.update_params t { Params.btc with symbol = Symbol.of_string "ETH" }
+       |> Result.map ~f:Strategy.params
+       |> Result.map ~f:(fun p -> p.symbol)
+       : Symbol.t Or_error.t)];
+  [%expect {| (Error ("update_params cannot change the symbol" (from BTC) (to_ ETH))) |}];
+  print_s
+    [%sexp
+      (Strategy.update_params t { Params.btc with levels = 0 } |> Result.is_error : bool)];
+  [%expect {| true |}]
+;;
