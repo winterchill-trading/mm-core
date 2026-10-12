@@ -55,7 +55,11 @@ All modules live under `Mm_core`.
 | `Live` | `Make (V : Venue.S)`: feeds, polls, plan execution, shutdown; hot `update_params`; the run `Report`; tick-to-order latency; `stop_signal` (SIGINT/SIGTERM) |
 
 Times are nanoseconds since the epoch everywhere (as in `exchange-core`); durations in
-`Params` are milliseconds.
+`Params` (`requote_interval_ms`, `order_ttl_ms`, `max_data_age_ms`,
+`action_rate_grace_ms`, `action_rate_cooldown_ms`) are `Time_ns.Span.t`. Their names keep
+the `_ms` suffix so existing params files still read: in a sexp a duration prints as a
+span (`1s`, `500ms`) and reads from either a span or a bare integer of milliseconds, so
+`(requote_interval_ms 1000)` and `(requote_interval_ms 1s)` are the same.
 
 ## The venue signature
 
