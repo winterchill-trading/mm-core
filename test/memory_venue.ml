@@ -55,6 +55,7 @@ type t =
   ; mutable book_writers : L2.t Pipe.Writer.t list
   ; mutable last_book : L2.t option
   ; mutable reconnect_hooks : (unit -> unit) list
+  ; mutable cancel_all_calls : int
   ; fills_r : Fill.t Pipe.Reader.t
   ; fills_w : Fill.t Pipe.Writer.t
   ; updates_r : Order_update.t Pipe.Reader.t
@@ -80,6 +81,7 @@ let create ?(time_source = Time_source.wall_clock ()) (bugs : Bugs.t) =
   ; book_writers = []
   ; last_book = None
   ; reconnect_hooks = []
+  ; cancel_all_calls = 0
   ; fills_r
   ; fills_w
   ; updates_r
@@ -332,8 +334,14 @@ let cancel t _symbol oids =
   return (Ok ())
 ;;
 
-let cancel_all t symbol = cancel t symbol (List.map t.orders ~f:(fun o -> o.order_id))
+let cancel_all t symbol =
+  t.cancel_all_calls <- t.cancel_all_calls + 1;
+  cancel t symbol (List.map t.orders ~f:(fun o -> o.order_id))
+;;
+
 let on_reconnect t ~f = t.reconnect_hooks <- f :: t.reconnect_hooks
+let simulate_reconnect t = List.iter (List.rev t.reconnect_hooks) ~f:(fun f -> f ())
+let cancel_all_calls t = t.cancel_all_calls
 
 let close t =
   t.closed <- true;

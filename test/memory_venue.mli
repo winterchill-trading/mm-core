@@ -69,4 +69,11 @@ val orders : t -> Open_order.t list
 val position : t -> Size.t
 
 val injected : t -> Injected.t
+
+(** Calls of [cancel_all] so far. *)
+val cancel_all_calls : t -> int
+
+(** Runs the [on_reconnect] hooks, as after a dropped and restored connection. *)
+val simulate_reconnect : t -> unit
+
 val is_closed : t -> bool
