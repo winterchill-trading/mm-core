@@ -26,7 +26,7 @@ let script =
   ]
 ;;
 
-let params = { Params.btc with requote_interval_ms = 500 }
+let params = { Params.btc with requote_interval_ms = Time_ns.Span.of_int_ms 500 }
 
 let%expect_test "stepped run, seed 1" =
   Stepped.print (Stepped.run ~seed:1 params script);

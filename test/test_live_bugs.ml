@@ -5,7 +5,13 @@ open Mm_core
 open Live_helpers
 module Live_memory = Live.Make (Memory_venue)
 
-let params = { Params.btc with requote_interval_ms = 100; max_data_age_ms = 60_000 }
+let params =
+  { Params.btc with
+    requote_interval_ms = Time_ns.Span.of_int_ms 100
+  ; max_data_age_ms = Time_ns.Span.of_int_ms 60_000
+  }
+;;
+
 let config = { Live.Config.params; summary_interval = Time_ns.Span.of_int_sec 60 }
 
 let start bugs =

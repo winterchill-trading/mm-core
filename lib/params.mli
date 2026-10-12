@@ -1,7 +1,10 @@
 (** Strategy parameters. Prices, sizes and amounts use the fixed-point types of
     [exchange-core]; spreads and thresholds are in basis points of the price. Durations
-    are milliseconds (timestamps elsewhere in this library are nanoseconds since the
-    epoch, as in [exchange-core]). *)
+    are [Time_ns.Span.t]; the [_ms] suffix of their names is kept so params files stay
+    readable. In a sexp a duration prints as a span ([1s], [500ms]) and reads from either
+    a span or a bare integer of milliseconds (the format of older params files), so
+    [(requote_interval_ms 1000)] and [(requote_interval_ms 1s)] are the same. Timestamps
+    elsewhere in this library are nanoseconds since the epoch, as in [exchange-core]. *)
 
 open! Core
 open Exchange_core
@@ -23,17 +26,17 @@ type t =
   ; requote_threshold_bps : float
   (** a resting order within this distance of its desired price (and with the desired
       size) is kept; the mid must move this far to trigger an early requote *)
-  ; requote_interval_ms : int
+  ; requote_interval_ms : Time_ns.Span.t
   (** minimum time between plans, unless the mid moved past the threshold or the position
       changed; also the timeout waiting for an open orders snapshot *)
-  ; order_ttl_ms : int (** resting orders older than this are replaced *)
+  ; order_ttl_ms : Time_ns.Span.t (** resting orders older than this are replaced *)
   ; gamma : float (** risk aversion, per bps of variance *)
   ; vol_window : int (** EWMA span (in book updates) of the volatility estimate *)
   ; max_vol_bps : float
   (** cap on the volatility fed to the quoter, so a jump in the book cannot blow up the
       [gamma * sigma^2] term *)
   ; max_drawdown : Usd.t (** kill switch: peak-to-current PnL drop *)
-  ; max_data_age_ms : int (** kill switch: book age before quotes are pulled *)
+  ; max_data_age_ms : Time_ns.Span.t (** kill switch: book age before quotes are pulled *)
   ; flatten_slippage_bps : float (** limit price offset of the reduce-only IOC flatten *)
   ; max_actions_per_sec : int
   (** kill switch: more cancels and places than this in the last second (absent in a
@@ -44,12 +47,12 @@ type t =
   ; bump_budget : Size.t
   (** how much, in total over a run, fills may take the position past [soft_max_position]
       while the growing side keeps quoting (absent in a sexp: 0) *)
-  ; action_rate_grace_ms : int
+  ; action_rate_grace_ms : Time_ns.Span.t
   (** after a venue resync ({!Strategy.on_resync}) the actions of this long are neither
       counted nor checked against [max_actions_per_sec], so the requote burst of a
       reconnect cannot trip the kill switch (absent in a sexp: 5000, and omitted when
       printing at that value) *)
-  ; action_rate_cooldown_ms : int option
+  ; action_rate_cooldown_ms : Time_ns.Span.t option
   (** when set, a [Max_action_rate] halt clears this long after it tripped and the
       strategy quotes again; other halts stay permanent (absent in a sexp: none, the halt
       is permanent) *)

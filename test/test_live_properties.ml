@@ -35,7 +35,7 @@ end
 
 let params =
   { Params.btc with
-    requote_interval_ms = 100
+    requote_interval_ms = Time_ns.Span.of_int_ms 100
   ; max_position = Size.of_string "0.004"
   ; max_drawdown = Usd.of_string "1000000"
   ; max_actions_per_sec = 10_000 (* books every millisecond would trip the default *)

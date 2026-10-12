@@ -77,7 +77,7 @@ let check ?actions_last_second (p : Params.t) ~now ~peak_pnl market inventory =
     | None ->
       (match Market_state.mid market, Market_state.age_ms market ~now with
        | None, _ | _, None -> Halt No_market_data
-       | Some _, Some age_ms when age_ms > p.max_data_age_ms ->
+       | Some _, Some age_ms when Time_ns.Span.(of_int_ms age_ms > p.max_data_age_ms) ->
          Halt (Stale_market_data { age_ms })
        | Some _, Some _ -> Ok))
 ;;

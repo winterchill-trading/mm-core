@@ -49,7 +49,7 @@ let create params =
 ;;
 
 let ours t symbol = Symbol.equal symbol t.params.symbol
-let ms n = n * 1_000_000
+let ns span = Time_ns.Span.to_int_ns span
 
 let on_book t (book : L2.t) =
   if ours t book.symbol then { t with market = Market_state.on_book t.market book } else t
@@ -97,20 +97,20 @@ let on_resync t ~now = { t with resynced_at = Some now }
 let in_grace t ~now =
   match t.resynced_at with
   | None -> false
-  | Some at -> now - at < ms t.params.action_rate_grace_ms
+  | Some at -> now - at < ns t.params.action_rate_grace_ms
 ;;
 
 (* A [Max_action_rate] halt clears after the cooldown, when there is one. *)
 let cooled_down t ~now =
   match t.mode, t.halted_at, t.params.action_rate_cooldown_ms with
-  | Halted (Max_action_rate _), Some at, Some cooldown -> now - at >= ms cooldown
+  | Halted (Max_action_rate _), Some at, Some cooldown -> now - at >= ns cooldown
   | _ -> false
 ;;
 
 let interval_elapsed t ~now =
   match t.last_plan_at with
   | None -> true
-  | Some at -> now - at >= ms t.params.requote_interval_ms
+  | Some at -> now - at >= ns t.params.requote_interval_ms
 ;;
 
 let should_requote t ~now ~was_running =
@@ -168,7 +168,7 @@ let tick t ~now =
     | None -> t
   in
   match t.awaiting_ack_since with
-  | Some since when now - since < ms t.params.requote_interval_ms -> t, []
+  | Some since when now - since < ns t.params.requote_interval_ms -> t, []
   | _ ->
     let unacknowledged = Option.is_some t.awaiting_ack_since in
     let t =

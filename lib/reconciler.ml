@@ -43,7 +43,9 @@ let reconcile (p : Params.t) ~now ~generation ~open_orders ~desired =
   let ours =
     List.filter open_orders ~f:(fun (o : Open_order.t) -> Symbol.equal o.symbol p.symbol)
   in
-  let keepable (o : Open_order.t) = now - o.timestamp < p.order_ttl_ms * 1_000_000 in
+  let keepable (o : Open_order.t) =
+    now - o.timestamp < Time_ns.Span.to_int_ns p.order_ttl_ms
+  in
   let matches (q : Quote.t) (o : Open_order.t) =
     Side.equal o.side q.side
     && Size.equal o.size q.sz

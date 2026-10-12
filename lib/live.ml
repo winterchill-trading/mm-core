@@ -431,7 +431,7 @@ module Make (V : Venue.S) = struct
       ~stop:(Deferred.any [ Ivar.read polls_stop; Ivar.read t.timers_stop ])
       ~continue_on_error:true
       t.time_source
-      (Time_ns.Span.of_int_ms (params t).requote_interval_ms)
+      (params t).requote_interval_ms
       (fun () -> request_sync t)
   ;;
 
@@ -446,7 +446,8 @@ module Make (V : Venue.S) = struct
         t.strategy <- strategy;
         t.config <- { t.config with params = next };
         Log.Global.info_s [%message "params updated" ~params:(next : Params.t)];
-        if current.requote_interval_ms <> next.requote_interval_ms then start_polls t;
+        if not (Time_ns.Span.equal current.requote_interval_ms next.requote_interval_ms)
+        then start_polls t;
         step t;
         Ok ())
   ;;

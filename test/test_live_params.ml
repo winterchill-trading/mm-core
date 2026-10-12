@@ -14,7 +14,7 @@ let%expect_test "update_params moves quotes on the next requote without a cancel
   let ts = Time_source.create ~now:(Time_ns.of_int_ns_since_epoch 0) () in
   let time_source = Time_source.read_only ts in
   let venue = Memory_venue.create ~time_source Memory_venue.Bugs.none in
-  let params = { Params.btc with requote_interval_ms = 100 } in
+  let params = { Params.btc with requote_interval_ms = Time_ns.Span.of_int_ms 100 } in
   let%bind live =
     Live_memory.start
       ~time_source
@@ -55,7 +55,10 @@ let%expect_test "update_params moves quotes on the next requote without a cancel
   let plans = (Live_memory.report live).plans in
   Live_memory.update_params
     live
-    { params with base_half_spread_bps = 5.; requote_interval_ms = 200 }
+    { params with
+      base_half_spread_bps = 5.
+    ; requote_interval_ms = Time_ns.Span.of_int_ms 200
+    }
   |> ok_exn;
   let%bind () = advance_to 60 in
   print_orders venue;
@@ -118,7 +121,10 @@ let%expect_test "a reconnect burst stays inside the grace period; a later one tr
   let time_source = Time_source.read_only ts in
   let venue = Memory_venue.create ~time_source Memory_venue.Bugs.none in
   let params =
-    { Params.btc with max_actions_per_sec = 40; action_rate_grace_ms = 1_000 }
+    { Params.btc with
+      max_actions_per_sec = 40
+    ; action_rate_grace_ms = Time_ns.Span.of_int_ms 1_000
+    }
   in
   let%bind live =
     Live_memory.start

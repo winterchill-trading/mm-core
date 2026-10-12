@@ -1,6 +1,21 @@
 open! Core
 open Exchange_core
 
+(* A duration field: printed as a span ([1s], [500ms]), read from either a span or a bare
+   integer of milliseconds, the format of params files written before spans. *)
+module Ms_span = struct
+  type t = Time_ns.Span.t [@@deriving compare, equal]
+
+  let sexp_of_t = Time_ns.Span.sexp_of_t
+
+  let t_of_sexp sexp =
+    match sexp with
+    | Sexp.Atom s when Option.is_some (Int.of_string_opt s) ->
+      Time_ns.Span.of_int_ms (Int.of_string s)
+    | _ -> Time_ns.Span.t_of_sexp sexp
+  ;;
+end
+
 type t =
   { symbol : Symbol.t
   ; tick : Price.t
@@ -14,19 +29,20 @@ type t =
   ; max_notional : Usd.t
   ; inventory_target : Size.t
   ; requote_threshold_bps : float
-  ; requote_interval_ms : int
-  ; order_ttl_ms : int
+  ; requote_interval_ms : Ms_span.t
+  ; order_ttl_ms : Ms_span.t
   ; gamma : float
   ; vol_window : int
   ; max_vol_bps : float
   ; max_drawdown : Usd.t
-  ; max_data_age_ms : int
+  ; max_data_age_ms : Ms_span.t
   ; flatten_slippage_bps : float
   ; max_actions_per_sec : int [@default 100]
   ; soft_max_position : Size.t option [@default None]
   ; bump_budget : Size.t [@default Size.zero]
-  ; action_rate_grace_ms : int [@default 5_000] [@sexp_drop_default.equal]
-  ; action_rate_cooldown_ms : int option [@sexp.option]
+  ; action_rate_grace_ms : Ms_span.t
+       [@default Time_ns.Span.of_int_ms 5_000] [@sexp_drop_default.equal]
+  ; action_rate_cooldown_ms : Ms_span.t option [@sexp.option]
   }
 [@@deriving sexp, compare, equal]
 
@@ -43,18 +59,18 @@ let btc =
   ; max_notional = Usd.of_string "1500"
   ; inventory_target = Size.zero
   ; requote_threshold_bps = 1.
-  ; requote_interval_ms = 1_000
-  ; order_ttl_ms = 60_000
+  ; requote_interval_ms = Time_ns.Span.second
+  ; order_ttl_ms = Time_ns.Span.minute
   ; gamma = 0.5
   ; vol_window = 100
   ; max_vol_bps = 10.
   ; max_drawdown = Usd.of_string "50"
-  ; max_data_age_ms = 5_000
+  ; max_data_age_ms = Time_ns.Span.of_int_sec 5
   ; flatten_slippage_bps = 50.
   ; max_actions_per_sec = 100
   ; soft_max_position = None
   ; bump_budget = Size.zero
-  ; action_rate_grace_ms = 5_000
+  ; action_rate_grace_ms = Time_ns.Span.of_int_sec 5
   ; action_rate_cooldown_ms = None
   }
 ;;
@@ -161,21 +177,23 @@ let validate t =
       ; ( Size.(abs inventory_target < max_position)
         , "inventory_target must be inside max_position" )
       ; Float.(requote_threshold_bps >= 0.), "requote_threshold_bps must be non-negative"
-      ; requote_interval_ms > 0, "requote_interval_ms must be positive"
-      ; order_ttl_ms > 0, "order_ttl_ms must be positive"
+      ; ( Time_ns.Span.is_positive requote_interval_ms
+        , "requote_interval_ms must be positive" )
+      ; Time_ns.Span.is_positive order_ttl_ms, "order_ttl_ms must be positive"
       ; Float.(gamma >= 0.), "gamma must be non-negative"
       ; vol_window >= 1, "vol_window must be positive"
       ; Float.(max_vol_bps >= 0.), "max_vol_bps must be non-negative"
       ; Usd.is_positive max_drawdown, "max_drawdown must be positive"
-      ; max_data_age_ms > 0, "max_data_age_ms must be positive"
+      ; Time_ns.Span.is_positive max_data_age_ms, "max_data_age_ms must be positive"
       ; Float.(flatten_slippage_bps > 0.), "flatten_slippage_bps must be positive"
       ; max_actions_per_sec > 0, "max_actions_per_sec must be positive"
       ; ( Option.for_all soft_max_position ~f:(fun soft ->
             Size.is_positive soft && Size.(soft <= max_position))
         , "soft_max_position must be in (0, max_position]" )
       ; not (Size.is_negative bump_budget), "bump_budget must be non-negative"
-      ; action_rate_grace_ms >= 0, "action_rate_grace_ms must be non-negative"
-      ; ( Option.for_all action_rate_cooldown_ms ~f:(fun ms -> ms > 0)
+      ; ( not (Time_ns.Span.is_negative action_rate_grace_ms)
+        , "action_rate_grace_ms must be non-negative" )
+      ; ( Option.for_all action_rate_cooldown_ms ~f:Time_ns.Span.is_positive
         , "action_rate_cooldown_ms must be positive" )
       ]
   in

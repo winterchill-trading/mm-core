@@ -126,18 +126,21 @@ let%expect_test "action rate grace and cooldown: printed only when not the defau
   [%expect {| () |}];
   let t =
     { Params.btc with
-      action_rate_grace_ms = 2_000
-    ; action_rate_cooldown_ms = Some 30_000
+      action_rate_grace_ms = Time_ns.Span.of_int_ms 2_000
+    ; action_rate_cooldown_ms = Some (Time_ns.Span.of_int_ms 30_000)
     }
   in
   print_s [%sexp (fields t : Sexp.t list)];
-  [%expect {| ((action_rate_grace_ms 2000) (action_rate_cooldown_ms 30000)) |}];
+  [%expect {| ((action_rate_grace_ms 2s) (action_rate_cooldown_ms 30s)) |}];
   print_s [%sexp (Params.equal t (Params.t_of_sexp (Params.sexp_of_t t)) : bool)];
   [%expect {| true |}];
   print_s
     [%sexp
       (Params.validate
-         { Params.btc with action_rate_grace_ms = -1; action_rate_cooldown_ms = Some 0 }
+         { Params.btc with
+           action_rate_grace_ms = Time_ns.Span.of_int_ms (-1)
+         ; action_rate_cooldown_ms = Some (Time_ns.Span.of_int_ms 0)
+         }
        |> Result.map ~f:(fun (_ : Params.t) -> ())
        : unit Or_error.t)];
   [%expect

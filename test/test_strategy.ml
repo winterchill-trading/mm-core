@@ -243,7 +243,7 @@ let%expect_test "fills past the soft limit use up the bump budget" =
     { Params.btc with
       soft_max_position = Some (sz "0.002")
     ; bump_budget = sz "0.0015"
-    ; requote_interval_ms = 100
+    ; requote_interval_ms = Time_ns.Span.of_int_ms 100
     }
   in
   let venue = Fake_venue.create () in
@@ -386,7 +386,10 @@ let%expect_test "a requote burst inside the resync grace period does not trip" =
 
 let%expect_test "the action rate cooldown clears the halt" =
   let params =
-    { Params.btc with max_actions_per_sec = 40; action_rate_cooldown_ms = Some 2_000 }
+    { Params.btc with
+      max_actions_per_sec = 40
+    ; action_rate_cooldown_ms = Some (Time_ns.Span.of_int_ms 2_000)
+    }
   in
   let venue = Fake_venue.create () in
   let t = flip_loop ~until:10 venue (Strategy.create params) in

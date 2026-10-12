@@ -27,7 +27,7 @@
     orders.
 
     Times ([now], book, order and fill timestamps) are nanoseconds since the epoch;
-    intervals in {!Params} are milliseconds. *)
+    intervals in {!Params} are [Time_ns.Span.t]. *)
 
 open! Core
 open Exchange_core

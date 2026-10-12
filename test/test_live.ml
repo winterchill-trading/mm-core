@@ -18,7 +18,9 @@ let%expect_test "the live loop quotes, applies fills and cancels on stop" =
   in
   let%bind mid = mid >>| ok_exn in
   let params =
-    { (Params.for_instrument instrument ~mid) with requote_interval_ms = 100 }
+    { (Params.for_instrument instrument ~mid) with
+      requote_interval_ms = Time_ns.Span.of_int_ms 100
+    }
   in
   print_s
     [%message (mid : Price.t) (params.order_size : Size.t) (params.max_position : Size.t)];
