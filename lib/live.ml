@@ -113,13 +113,14 @@ let describe_order (o : Order_request.t) =
 
 module Make (V : Venue.S) = struct
   type t =
-    { config : Config.t
+    { mutable config : Config.t
     ; venue : V.t
     ; time_source : Time_source.t
     ; sequencer : unit Throttle.Sequencer.t
     ; started_at : Time_ns.t
     ; seen_trades : Trade_id.Hash_set.t
     ; timers_stop : unit Ivar.t
+    ; mutable polls_stop : unit Ivar.t
     ; stopped : Report.t Ivar.t
     ; latency : Latency_histogram.t
     ; mutable book_waiting_since : Time_ns.t option
@@ -395,6 +396,35 @@ module Make (V : Venue.S) = struct
 
   (* {2 Lifecycle} *)
 
+  (* Polls every [requote_interval_ms] until [stop] or the next [start_polls]. *)
+  let start_polls t =
+    Ivar.fill_if_empty t.polls_stop ();
+    let polls_stop = Ivar.create () in
+    t.polls_stop <- polls_stop;
+    Time_source.every
+      ~stop:(Deferred.any [ Ivar.read polls_stop; Ivar.read t.timers_stop ])
+      ~continue_on_error:true
+      t.time_source
+      (Time_ns.Span.of_int_ms (params t).requote_interval_ms)
+      (fun () -> request_sync t)
+  ;;
+
+  let update_params t (next : Params.t) =
+    if t.stopping
+    then Or_error.error_s [%message "update_params: the loop is stopping"]
+    else (
+      let current = params t in
+      match Strategy.update_params t.strategy next with
+      | Error _ as error -> error
+      | Ok strategy ->
+        t.strategy <- strategy;
+        t.config <- { t.config with params = next };
+        Log.Global.info_s [%message "params updated" ~params:(next : Params.t)];
+        if current.requote_interval_ms <> next.requote_interval_ms then start_polls t;
+        step t;
+        Ok ())
+  ;;
+
   let start ?(time_source = Time_source.wall_clock ()) venue (config : Config.t) =
     let params = config.params in
     match Params.validate params with
@@ -408,6 +438,7 @@ module Make (V : Venue.S) = struct
         ; started_at = Time_source.now time_source
         ; seen_trades = Trade_id.Hash_set.create ()
         ; timers_stop = Ivar.create ()
+        ; polls_stop = Ivar.create ()
         ; stopped = Ivar.create ()
         ; latency = Latency_histogram.create ()
         ; book_waiting_since = None
@@ -439,13 +470,8 @@ module Make (V : Venue.S) = struct
         (Pipe.iter_without_pushback (V.order_updates venue) ~f:(on_order_update t));
       let%bind books = V.books venue params.symbol in
       don't_wait_for (Pipe.iter_without_pushback books ~f:(on_book t));
+      start_polls t;
       let stop = Ivar.read t.timers_stop in
-      Time_source.every
-        ~stop
-        ~continue_on_error:true
-        time_source
-        (Time_ns.Span.of_int_ms params.requote_interval_ms)
-        (fun () -> request_sync t);
       Time_source.every
         ~start:(Time_source.after time_source config.summary_interval)
         ~stop

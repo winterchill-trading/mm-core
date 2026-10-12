@@ -80,7 +80,16 @@ module Make (V : Venue.S) : sig
       final account snapshot, closes the venue and returns the report. Idempotent. *)
   val stop : t -> Report.t Deferred.t
 
+  (** Swaps the strategy parameters of the running loop ({!Strategy.update_params}): no
+      restart and no cancel-all. The next tick requotes with the new parameters, the
+      reconciler keeping the resting orders that still match; a changed
+      [requote_interval_ms] re-arms the poll timer. Errors if the parameters are invalid,
+      name another symbol, or the loop is stopping. *)
+  val update_params : t -> Params.t -> unit Or_error.t
+
+  (** Running totals so far; [stop] returns the final one. *)
   val report : t -> Report.t
+
   val strategy : t -> Strategy.t
 
   (** Tick-to-order latency: from the arrival of a book update (on the time source) to the
