@@ -8,10 +8,12 @@
       [requote_interval_ms]: placed orders have no oid yet, so a second plan could
       duplicate them. After that, plans may cancel and flatten but place no quotes until a
       snapshot arrives.
-    + [Risk.check] picks the mode. A sticky halt ([Max_position], [Max_drawdown]) is
-      permanent ([Halted]): every [requote_interval_ms] the flatten plan is sent until no
-      orders rest and the position is flat. Missing or stale data ([Pulled]) cancels all
-      resting orders until fresh data arrives.
+    + [Risk.check] picks the mode, counting the cancels and places of the plans sent in
+      the last second against [max_actions_per_sec]. A sticky halt ([Max_position],
+      [Max_drawdown], [Max_action_rate]) is permanent ([Halted]): every
+      [requote_interval_ms] the flatten plan is sent until no orders rest and the position
+      is flat. Missing or stale data ([Pulled]) cancels all resting orders until fresh
+      data arrives.
     + [Running] requotes when the last plan is older than [requote_interval_ms], the mid
       moved at least [requote_threshold_bps] since then, the position changed, or the mode
       just became [Running]. The plan is [Reconciler.reconcile] of [Quoter.quote].

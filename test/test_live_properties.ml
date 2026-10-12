@@ -38,6 +38,7 @@ let params =
     requote_interval_ms = 100
   ; max_position = Size.of_string "0.004"
   ; max_drawdown = Usd.of_string "1000000"
+  ; max_actions_per_sec = 10_000 (* books every millisecond would trip the default *)
   }
 ;;
 

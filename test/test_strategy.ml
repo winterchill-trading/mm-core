@@ -209,3 +209,31 @@ let%expect_test "drawdown halts permanently and flattens" =
     |}];
   ignore (t : Strategy.t)
 ;;
+
+let%expect_test "a runaway requote loop trips the action rate kill switch" =
+  (* The mid flips by 10 bps every millisecond, so every tick replaces the whole ladder. *)
+  let params = { Params.btc with max_actions_per_sec = 40 } in
+  let venue = Fake_venue.create () in
+  let rec go t i =
+    if i > 20
+    then t
+    else (
+      let now = ms i in
+      let bid, ask = if i % 2 = 0 then "99990", "100010" else "100090", "100110" in
+      let t = Strategy.on_book t (book ~time:i ~bid ~ask ()) in
+      let t, plan = Strategy.tick t ~now in
+      Fake_venue.apply venue ~now plan;
+      let t = Strategy.on_open_orders t venue.orders in
+      match Strategy.mode t with
+      | Halted _ ->
+        printf "halted at %d ms\n" i;
+        t
+      | Running | Pulled _ -> go t (i + 1))
+  in
+  let t = go (Strategy.create params) 0 in
+  print_s [%sexp (Strategy.mode t : Strategy.Mode.t)];
+  [%expect {|
+    halted at 4 ms
+    (Halted (Max_action_rate (actions 42)))
+    |}]
+;;

@@ -21,6 +21,7 @@ type t =
   ; last_quoted_mid : Price.t option
   ; last_quoted_position : Size.t option
   ; awaiting_ack_since : int option
+  ; action_rate : Risk.Action_rate.t
   }
 [@@deriving sexp_of]
 
@@ -37,6 +38,7 @@ let create params =
   ; last_quoted_mid = None
   ; last_quoted_position = None
   ; awaiting_ack_since = None
+  ; action_rate = Risk.Action_rate.empty
   }
 ;;
 
@@ -105,6 +107,11 @@ let emit t ~now plan =
             not (Set.mem cancelled o.order_id))
       ; generation = (if placed then t.generation + 1 else t.generation)
       ; awaiting_ack_since = Some now
+      ; action_rate =
+          Risk.Action_rate.record
+            t.action_rate
+            ~now
+            ~actions:(List.count plan ~f:Action.is_change)
       }
     , plan ))
 ;;
@@ -125,7 +132,15 @@ let tick t ~now =
       match t.mode with
       | Halted _ as halted -> halted
       | Running | Pulled _ ->
-        (match Risk.check t.params ~now ~peak_pnl:t.peak_pnl t.market t.inventory with
+        (match
+           Risk.check
+             ~actions_last_second:(Risk.Action_rate.last_second t.action_rate ~now)
+             t.params
+             ~now
+             ~peak_pnl:t.peak_pnl
+             t.market
+             t.inventory
+         with
          | Ok -> Running
          | Halt reason when Risk.Reason.is_sticky reason -> Halted reason
          | Halt reason -> Pulled reason)

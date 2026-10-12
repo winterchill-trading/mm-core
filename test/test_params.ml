@@ -57,3 +57,17 @@ let%expect_test "order size clears the venue minimum with a margin, rounded up" 
   show_size ~min_notional:(Usd.of_int 5) "100000";
   [%expect {| ((order_size 0.001) (notional 100)) |}]
 ;;
+
+let%expect_test "a params sexp without max_actions_per_sec takes the default" =
+  let sexp =
+    match Params.sexp_of_t Params.btc with
+    | List fields ->
+      Sexp.List
+        (List.filter fields ~f:(function
+          | List (Atom "max_actions_per_sec" :: _) -> false
+          | _ -> true))
+    | atom -> atom
+  in
+  print_s [%sexp ((Params.t_of_sexp sexp).max_actions_per_sec : int)];
+  [%expect {| 100 |}]
+;;
