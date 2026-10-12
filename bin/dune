@@ -1,0 +1,13 @@
+(executable
+ (name main)
+ (public_name mm-core)
+ (package mm-core-replay)
+ (libraries
+  core
+  core_unix.command_unix
+  async
+  market-data
+  mm-core
+  mm-core-replay)
+ (preprocess
+  (pps ppx_jane)))
