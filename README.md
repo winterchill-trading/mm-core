@@ -46,10 +46,10 @@ All modules live under `Mm_core`.
 | `Action` | `Keep oid \| Cancel oid \| Place Order_request.t` |
 | `Reconciler` | Minimal plan from resting orders to the desired ladder; deterministic client order ids |
 | `Risk` | Kill switch (`Ok \| Halt reason`), the one second `Action_rate` window and the flatten plan |
-| `Strategy` | State machine: `on_book`, `on_fill`, `on_open_orders`, `on_account`, `tick ~now` |
+| `Strategy` | State machine: `on_book`, `on_fill`, `on_open_orders`, `on_account`, `on_resync`, `tick ~now`, `update_params` |
 | `Venue` | `module type S`: the Async venue client the live loop runs on |
 | `Latency_histogram` | Latency histogram at two significant digits: count, p50, p99, exact max |
-| `Live` | `Make (V : Venue.S)`: feeds, polls, plan execution, shutdown; the run `Report`; tick-to-order latency; `stop_signal` (SIGINT/SIGTERM) |
+| `Live` | `Make (V : Venue.S)`: feeds, polls, plan execution, shutdown; hot `update_params`; the run `Report`; tick-to-order latency; `stop_signal` (SIGINT/SIGTERM) |
 
 Times are nanoseconds since the epoch everywhere (as in `exchange-core`); durations in
 `Params` are milliseconds.
@@ -120,9 +120,30 @@ Live_hl.connect_and_run config ~symbol
 - The report's cancellation count comes from `Cancelled` order updates.
 - `tick_to_order` reports p50, p99 and max of the time from a book update's arrival to
   the send of the plan it led to (sequencer waits included).
-- `start`, `run`, `connect_and_run`, `first_mid` and `stop_signal` take an optional
+- `start` and `connect_and_start` return the running loop; `update_params`, `report`,
+  `tick_to_order` and `stop` take that handle. `run` and `connect_and_run` wrap them and
+  wait for a stop deferred.
+- `start`, `connect_and_start`, `run`, `connect_and_run`, `first_mid` and `stop_signal` take an optional
   `?time_source` (default the wall clock). With `Time_source.create` a whole run is driven
   by `advance_by_alarms`, as the property and latency tests do.
+
+### Hot parameter updates
+
+```ocaml
+let%bind live = Live_hl.connect_and_start config ~symbol ~params ~summary_interval in
+let live = ok_exn live in
+(* later, e.g. on SIGHUP after re-reading a params file *)
+Live_hl.update_params live { (Mm_core.Strategy.params (Live_hl.strategy live)) with
+  base_half_spread_bps = 5. }
+```
+
+`update_params` validates the new parameters (same symbol only) and swaps them into the
+running strategy: market state, inventory, resting orders, generation, mode and action
+history carry over, the loop keeps running and nothing is cancelled wholesale. The next
+tick requotes; the reconciler keeps the resting orders that still match the new ladder
+and replaces the rest. A changed `requote_interval_ms` re-arms the poll timer, a changed
+`vol_window` keeps the volatility estimate and smooths it with the new span from then
+on, and a halted strategy stays halted. `Strategy.update_params` is the pure version.
 
 ## Strategy
 
@@ -190,8 +211,21 @@ valid client id on Hyperliquid (128-bit cloid), Binance and Bybit (at most 36 ch
 | `abs(position) > max_position` | sticky | cancel all, reduce-only IOC for the whole position at `mid -/+ flatten_slippage_bps` |
 | `peak_pnl - pnl > max_drawdown`, `pnl = realized + unrealized(mid) - fees` | sticky | same |
 | no two-sided book | until data | cancel all |
-| more than `max_actions_per_sec` cancels and places in the last second | sticky | same as position |
+| more than `max_actions_per_sec` cancels and places in the last second | sticky (optional cooldown) | same as position |
 | `now - book_time > max_data_age_ms` | until data | cancel all |
+
+The action rate is a rolling one-second window: a queue of (time, count) entries with
+their running sum, trimmed from the front, amortised O(1) per plan. Two parameters shape
+it:
+
+- `action_rate_grace_ms` (default 5000): after a venue reconnect (`Live` calls
+  `Strategy.on_resync`) plans are neither counted nor checked for this long, so the
+  burst of cancels and places that follows a resync (for example after a simulator
+  restart) cannot trip the switch. A burst that carries on past the grace period trips it
+  within a few ticks.
+- `action_rate_cooldown_ms` (default none): when set, a `Max_action_rate` halt clears
+  this long after it tripped, the window is emptied and the strategy quotes again if the
+  other checks pass. Position and drawdown halts stay permanent.
 
 ### Strategy loop
 
@@ -220,13 +254,14 @@ by trade id.
 | max position / max notional | 0.01 BTC / 1500 USD |
 | requote threshold / interval / order ttl | 1 bps / 1 s / 60 s |
 | max drawdown / max data age / flatten slippage | 50 USD / 5 s / 50 bps |
-| max actions per second | 100 |
+| max actions per second / grace after resync / cooldown | 100 / 5 s / none |
 | soft max position / bump budget | none / 0 |
 
 `Params.validate` names every field (no wildcard), so a new field needs its own check, and
 rejects NaN and infinity in every float. Fields added after the first release
-(`max_actions_per_sec`, `soft_max_position`, `bump_budget`) default when absent from a
-sexp.
+(`max_actions_per_sec`, `soft_max_position`, `bump_budget`, `action_rate_grace_ms`,
+`action_rate_cooldown_ms`) default when absent from a sexp; the last two are also left
+out of a printed sexp at their defaults.
 
 `Params.for_instrument instrument ~mid` rescales these to another instrument: about 100
 USD per order (nearest lot), 10 orders of position room and 1.5x that in notional. Pass
@@ -241,12 +276,17 @@ order size becomes at least 1.2x that, rounded up to the lot.
   limit; reconciling a ladder against itself, or right after applying a plan, only keeps;
   `Risk.flatten` only sends reduce-only orders that shrink the position; NaN in any float
   parameter fails `validate`; quotes for one market state under each parameter preset;
-  the soft limit and the action rate kill switch.
+  the soft limit and the action rate kill switch, its grace period and cooldown; the
+  rolling window against a naive sum; hot parameter updates.
 - live-loop tests over `test/memory_venue.ml`, an in-memory `Venue.S` that rejects
   crossing post-only orders and has a seeded bug mode (`Bugs.t`: random rejects, late
   cancel acks, fills split in parts, stale open-order polls, places that time out but rest
   later, slow place answers). A place that timed out and rests later is adopted, not
   duplicated; one that rests after the loop re-placed is cancelled.
+- `test_live_params.ml`, on a synthetic clock: `update_params` widens the spread
+  mid-run and the next requote moves only the outer quotes with no `cancel_all`; a
+  requote burst right after a reconnect stays in the grace period, the same burst later
+  trips the switch.
 - a property test feeding random book, fill and wait scripts through `Live.Make` on a
   synthetic clock, checking after each step that resting quotes do not cross, sit on
   distinct prices, respect `max_position`, and that no order was rejected.
