@@ -64,5 +64,6 @@ val for_instrument
   -> t
 
 (** Checks the invariants the quoter relies on (positive tick, lot and size, positive
-    half-spread, at least one level, ...). *)
+    half-spread, at least one level, ...). Every float field must be finite: NaN and
+    infinities are rejected, whatever the field's range. *)
 val validate : t -> t Or_error.t

@@ -97,29 +97,68 @@ let for_instrument
 ;;
 
 let validate t =
+  (* Every field is named, so a new one cannot be added without deciding its checks. *)
+  let { symbol = _
+      ; tick
+      ; lot
+      ; order_size
+      ; levels
+      ; base_half_spread_bps
+      ; level_spacing_bps
+      ; skew_bps
+      ; max_position
+      ; max_notional
+      ; inventory_target
+      ; requote_threshold_bps
+      ; requote_interval_ms
+      ; order_ttl_ms
+      ; gamma
+      ; vol_window
+      ; max_vol_bps
+      ; max_drawdown
+      ; max_data_age_ms
+      ; flatten_slippage_bps
+      ; max_actions_per_sec
+      }
+    =
+    t
+  in
+  let finite =
+    List.map
+      [ "base_half_spread_bps", base_half_spread_bps
+      ; "level_spacing_bps", level_spacing_bps
+      ; "skew_bps", skew_bps
+      ; "requote_threshold_bps", requote_threshold_bps
+      ; "gamma", gamma
+      ; "max_vol_bps", max_vol_bps
+      ; "flatten_slippage_bps", flatten_slippage_bps
+      ]
+      ~f:(fun (name, x) -> Float.is_finite x, name ^ " must be finite")
+  in
   let checks =
-    [ Price.is_positive t.tick, "tick must be positive"
-    ; Size.is_positive t.lot, "lot must be positive"
-    ; Size.(t.order_size >= t.lot), "order_size must be at least one lot"
-    ; t.levels >= 1 && t.levels <= 255, "levels must be in [1, 255]"
-    ; Float.(t.base_half_spread_bps > 0.), "base_half_spread_bps must be positive"
-    ; Float.(t.level_spacing_bps >= 0.), "level_spacing_bps must be non-negative"
-    ; Float.(t.skew_bps >= 0.), "skew_bps must be non-negative"
-    ; Size.is_positive t.max_position, "max_position must be positive"
-    ; Usd.is_positive t.max_notional, "max_notional must be positive"
-    ; ( Size.(abs t.inventory_target < t.max_position)
-      , "inventory_target must be inside max_position" )
-    ; Float.(t.requote_threshold_bps >= 0.), "requote_threshold_bps must be non-negative"
-    ; t.requote_interval_ms > 0, "requote_interval_ms must be positive"
-    ; t.order_ttl_ms > 0, "order_ttl_ms must be positive"
-    ; Float.(t.gamma >= 0.), "gamma must be non-negative"
-    ; t.vol_window >= 1, "vol_window must be positive"
-    ; Float.(t.max_vol_bps >= 0.), "max_vol_bps must be non-negative"
-    ; Usd.is_positive t.max_drawdown, "max_drawdown must be positive"
-    ; t.max_data_age_ms > 0, "max_data_age_ms must be positive"
-    ; Float.(t.flatten_slippage_bps > 0.), "flatten_slippage_bps must be positive"
-    ; t.max_actions_per_sec > 0, "max_actions_per_sec must be positive"
-    ]
+    finite
+    @ [ Price.is_positive tick, "tick must be positive"
+      ; Size.is_positive lot, "lot must be positive"
+      ; Size.(order_size >= lot), "order_size must be at least one lot"
+      ; levels >= 1 && levels <= 255, "levels must be in [1, 255]"
+      ; Float.(base_half_spread_bps > 0.), "base_half_spread_bps must be positive"
+      ; Float.(level_spacing_bps >= 0.), "level_spacing_bps must be non-negative"
+      ; Float.(skew_bps >= 0.), "skew_bps must be non-negative"
+      ; Size.is_positive max_position, "max_position must be positive"
+      ; Usd.is_positive max_notional, "max_notional must be positive"
+      ; ( Size.(abs inventory_target < max_position)
+        , "inventory_target must be inside max_position" )
+      ; Float.(requote_threshold_bps >= 0.), "requote_threshold_bps must be non-negative"
+      ; requote_interval_ms > 0, "requote_interval_ms must be positive"
+      ; order_ttl_ms > 0, "order_ttl_ms must be positive"
+      ; Float.(gamma >= 0.), "gamma must be non-negative"
+      ; vol_window >= 1, "vol_window must be positive"
+      ; Float.(max_vol_bps >= 0.), "max_vol_bps must be non-negative"
+      ; Usd.is_positive max_drawdown, "max_drawdown must be positive"
+      ; max_data_age_ms > 0, "max_data_age_ms must be positive"
+      ; Float.(flatten_slippage_bps > 0.), "flatten_slippage_bps must be positive"
+      ; max_actions_per_sec > 0, "max_actions_per_sec must be positive"
+      ]
   in
   match List.filter_map checks ~f:(fun (ok, msg) -> Option.some_if (not ok) msg) with
   | [] -> Ok t
