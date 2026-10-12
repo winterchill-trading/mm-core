@@ -3,24 +3,8 @@ open! Async
 open Exchange_core
 open Mm_core
 open Helpers
+open Live_helpers
 module Live_memory = Live.Make (Memory_venue)
-
-let rec wait_until ?(timeout = Time_ns.Span.of_int_sec 10) ~what f =
-  if f ()
-  then return ()
-  else if Time_ns.Span.(timeout <= zero)
-  then raise_s [%message "timed out waiting" what]
-  else (
-    let step = Time_ns.Span.of_int_ms 10 in
-    let%bind () = Clock_ns.after step in
-    wait_until ~timeout:Time_ns.Span.(timeout - step) ~what f)
-;;
-
-let live_book () =
-  { (book ~bid:"99990" ~ask:"100010" ()) with
-    time = Time_ns.to_int_ns_since_epoch (Time_ns.now ())
-  }
-;;
 
 let%expect_test "the live loop quotes, applies fills and cancels on stop" =
   Log.Global.set_output [];

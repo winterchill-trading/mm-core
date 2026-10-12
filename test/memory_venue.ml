@@ -260,6 +260,41 @@ let remove t oids =
         })
 ;;
 
+let fill_resting t (o : Open_order.t) ~tid =
+  let now = Time_ns.to_int_ns_since_epoch (Time_ns.now ()) in
+  t.orders
+  <- List.filter t.orders ~f:(fun (r : Open_order.t) ->
+       not (Order_id.equal r.order_id o.order_id));
+  if not (Pipe.is_closed t.updates_w)
+  then
+    Pipe.write_without_pushback
+      t.updates_w
+      { order_id = o.order_id
+      ; client_order_id = o.client_order_id
+      ; symbol = o.symbol
+      ; side = o.side
+      ; px = o.px
+      ; status = Filled
+      ; filled = o.size
+      ; remaining = Size.zero
+      ; time = now
+      };
+  push_fill
+    t
+    { trade_id = Trade_id.of_int tid
+    ; order_id = o.order_id
+    ; client_order_id = o.client_order_id
+    ; symbol = o.symbol
+    ; side = o.side
+    ; px = o.px
+    ; size = o.size
+    ; fee = Usd.zero
+    ; is_maker = true
+    ; time = now
+    ; closed_pnl = None
+    }
+;;
+
 let cancel t _symbol oids =
   if Time_ns.Span.(t.bugs.cancel_ack_delay > zero)
   then (

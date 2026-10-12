@@ -51,6 +51,10 @@ val push_book : t -> L2.t -> unit
     [tid * 100 + part] (a fill delivered whole keeps its trade id). *)
 val push_fill : t -> Fill.t -> unit
 
+(** Fills a resting order completely as a maker: it leaves the book with a [Filled] update
+    and its fill is pushed (see {!push_fill}) with trade id [tid]. *)
+val fill_resting : t -> Open_order.t -> tid:int -> unit
+
 (** Resting orders, in placement order. *)
 val orders : t -> Open_order.t list
 
