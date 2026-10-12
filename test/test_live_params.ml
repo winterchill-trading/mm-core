@@ -111,3 +111,67 @@ let%expect_test "connect_and_start returns the first error and no handle" =
   [%expect {| (Error ("no two-sided book" (symbol BTC) (timeout 10s))) |}];
   return ()
 ;;
+
+let%expect_test "a reconnect burst stays inside the grace period; a later one trips" =
+  Log.Global.set_output [];
+  let ts = Time_source.create ~now:(Time_ns.of_int_ns_since_epoch 0) () in
+  let time_source = Time_source.read_only ts in
+  let venue = Memory_venue.create ~time_source Memory_venue.Bugs.none in
+  let params =
+    { Params.btc with max_actions_per_sec = 40; action_rate_grace_ms = 1_000 }
+  in
+  let%bind live =
+    Live_memory.start
+      ~time_source
+      venue
+      { params; summary_interval = Time_ns.Span.of_int_sec 3600 }
+    >>| ok_exn
+  in
+  let advance_to ms =
+    let%bind () =
+      Time_source.advance_by_alarms
+        ts
+        ~to_:(Time_ns.of_int_ns_since_epoch (ms * 1_000_000))
+    in
+    Scheduler.yield_until_no_jobs_remain ()
+  in
+  (* A book whose mid flips by 10 bps every [step] ms, so each tick replaces the ladder. *)
+  let burst ~from ~until =
+    Deferred.List.iter ~how:`Sequential (List.range from until ~stride:2) ~f:(fun at ->
+      let%bind () = advance_to at in
+      let mid = if at / 2 % 2 = 0 then 100_000 else 100_100 in
+      Memory_venue.push_book
+        venue
+        { symbol = params.symbol
+        ; time = Time_ns.to_int_ns_since_epoch (Time_source.now ts)
+        ; bids = [ { px = Price.of_int (mid - 10); sz = Size.one; n = 1 } ]
+        ; asks = [ { px = Price.of_int (mid + 10); sz = Size.one; n = 1 } ]
+        };
+      Scheduler.yield_until_no_jobs_remain ())
+  in
+  let show label =
+    let r = Live_memory.report live in
+    print_s
+      [%message
+        label
+          ~plans:(r.plans : int)
+          ~reconnects:(r.reconnects : int)
+          ~mode:(r.mode : Strategy.Mode.t)]
+  in
+  let%bind () = advance_to 10_000 in
+  Memory_venue.simulate_reconnect venue;
+  let%bind () = burst ~from:10_000 ~until:10_200 in
+  show "burst after the reconnect";
+  [%expect {| ("burst after the reconnect" (plans 100) (reconnects 1) (mode Running)) |}];
+  let%bind () = burst ~from:12_000 ~until:12_200 in
+  show "burst outside the grace period";
+  [%expect
+    {|
+    ("burst outside the grace period" (plans 104) (reconnects 1)
+     (mode (Halted (Max_action_rate (actions 48)))))
+    |}];
+  let stopped = Live_memory.stop live in
+  let%bind () = advance_to 20_000 in
+  let%bind (_ : Live.Report.t) = stopped in
+  return ()
+;;
