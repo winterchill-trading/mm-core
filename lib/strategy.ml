@@ -22,6 +22,8 @@ type t =
   ; last_quoted_position : Size.t option
   ; awaiting_ack_since : int option
   ; action_rate : Risk.Action_rate.t
+  ; resynced_at : int option
+  ; halted_at : int option
   ; bump_used : Size.t
   }
 [@@deriving sexp_of]
@@ -40,6 +42,8 @@ let create params =
   ; last_quoted_position = None
   ; awaiting_ack_since = None
   ; action_rate = Risk.Action_rate.empty
+  ; resynced_at = None
+  ; halted_at = None
   ; bump_used = Size.zero
   }
 ;;
@@ -88,6 +92,21 @@ let on_account t state =
   { t with inventory = Inventory.sync t.inventory state ~symbol:t.params.symbol }
 ;;
 
+let on_resync t ~now = { t with resynced_at = Some now }
+
+let in_grace t ~now =
+  match t.resynced_at with
+  | None -> false
+  | Some at -> now - at < ms t.params.action_rate_grace_ms
+;;
+
+(* A [Max_action_rate] halt clears after the cooldown, when there is one. *)
+let cooled_down t ~now =
+  match t.mode, t.halted_at, t.params.action_rate_cooldown_ms with
+  | Halted (Max_action_rate _), Some at, Some cooldown -> now - at >= ms cooldown
+  | _ -> false
+;;
+
 let interval_elapsed t ~now =
   match t.last_plan_at with
   | None -> true
@@ -130,10 +149,13 @@ let emit t ~now plan =
       ; generation = (if placed then t.generation + 1 else t.generation)
       ; awaiting_ack_since = Some now
       ; action_rate =
-          Risk.Action_rate.record
-            t.action_rate
-            ~now
-            ~actions:(List.count plan ~f:Action.is_change)
+          (if in_grace t ~now
+           then t.action_rate
+           else
+             Risk.Action_rate.record
+               t.action_rate
+               ~now
+               ~actions:(List.count plan ~f:Action.is_change))
       }
     , plan ))
 ;;
@@ -149,6 +171,16 @@ let tick t ~now =
   | Some since when now - since < ms t.params.requote_interval_ms -> t, []
   | _ ->
     let unacknowledged = Option.is_some t.awaiting_ack_since in
+    let t =
+      if cooled_down t ~now
+      then
+        { t with
+          mode = Pulled No_market_data
+        ; halted_at = None
+        ; action_rate = Risk.Action_rate.empty
+        }
+      else t
+    in
     let was_running = Mode.equal t.mode Running in
     let mode : Mode.t =
       match t.mode with
@@ -156,7 +188,10 @@ let tick t ~now =
       | Running | Pulled _ ->
         (match
            Risk.check
-             ~actions_last_second:(Risk.Action_rate.last_second t.action_rate ~now)
+             ?actions_last_second:
+               (if in_grace t ~now
+                then None
+                else Some (Risk.Action_rate.last_second t.action_rate ~now))
              t.params
              ~now
              ~peak_pnl:t.peak_pnl
@@ -167,7 +202,13 @@ let tick t ~now =
          | Halt reason when Risk.Reason.is_sticky reason -> Halted reason
          | Halt reason -> Pulled reason)
     in
-    let t = { t with mode } in
+    let halted_at =
+      match t.mode, mode with
+      | Halted _, _ -> t.halted_at
+      | (Running | Pulled _), Halted _ -> Some now
+      | _, (Running | Pulled _) -> None
+    in
+    let t = { t with mode; halted_at } in
     (match mode with
      | Halted _ ->
        if interval_elapsed t ~now
