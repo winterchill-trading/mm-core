@@ -2,8 +2,11 @@
 
     Each desired quote, in order, keeps the closest unused resting order of the same
     symbol and side that has exactly the desired size, is within [requote_threshold_bps]
-    of the desired price and is younger than [order_ttl_ms]. Resting orders left over are
-    cancelled; desired quotes left over are placed as post-only (ALO) limit orders.
+    of the desired price and is younger than [order_ttl_ms]. A kept order must also stay
+    strictly beyond the previous level's final price and strictly inside the next desired
+    price on its side, so a ladder (each side listed in level order, as {!Quoter.quote}
+    returns it) never has two orders on one price. Resting orders left over are cancelled;
+    desired quotes left over are placed as post-only (ALO) limit orders.
 
     The plan lists cancels (in open-order order), then places (in desired order), then
     keeps. Resting orders on other symbols are ignored. *)

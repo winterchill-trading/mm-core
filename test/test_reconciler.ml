@@ -148,3 +148,20 @@ let%expect_test "duplicates: only one resting order per quote is kept" =
     (Keep 3)
     |}]
 ;;
+
+let%expect_test "a kept order never lands on the next level's price" =
+  (* 99970 is within tolerance of level 0 (99978), but keeping it there would put a new
+     level 1 order on the same price. It is kept for level 1 instead. *)
+  show
+    [ open_order ~oid:1 ~side:Buy ~px:"99970" ~sz:"0.001" () ]
+    [ { Quote.side = Buy; level = 0; px = px "99978"; sz = sz "0.001" }
+    ; { Quote.side = Buy; level = 1; px = px "99970"; sz = sz "0.001" }
+    ];
+  [%expect
+    {|
+    (Place
+     ((symbol BTC) (side Buy) (size 0.001) (px (99978)) (order_type (Limit Alo))
+      (reduce_only false) (client_order_id (0x42544300000000000000000000000007))))
+    (Keep 1)
+    |}]
+;;
