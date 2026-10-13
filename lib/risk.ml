@@ -30,11 +30,18 @@ module Action_rate = struct
   let empty = { entries = Fdeque.empty; total = 0 }
   let window = 1_000_000_000
 
+  (* [peek_front_exn] behind [is_empty] rather than [peek_front]: no [Some] per call. *)
   let rec prune t ~now =
-    match Fdeque.peek_front t.entries with
-    | Some (at, actions) when now - at >= window ->
-      prune { entries = Fdeque.drop_front_exn t.entries; total = t.total - actions } ~now
-    | Some _ | None -> t
+    if Fdeque.is_empty t.entries
+    then t
+    else (
+      let at, actions = Fdeque.peek_front_exn t.entries in
+      if now - at >= window
+      then
+        prune
+          { entries = Fdeque.drop_front_exn t.entries; total = t.total - actions }
+          ~now
+      else t)
   ;;
 
   let record t ~now ~actions =
@@ -55,31 +62,47 @@ type t =
   | Halt of Reason.t
 [@@deriving sexp, compare, equal]
 
-let check ?actions_last_second (p : Params.t) ~now ~peak_pnl market inventory =
+let check_or_null ~actions_last_second (p : Params.t) ~now ~peak_pnl market inventory =
   let position = Inventory.position inventory in
-  let drawdown =
-    Option.bind (Market_state.mid market) ~f:(fun mark ->
-      let pnl = Inventory.total_pnl inventory ~mark in
-      let peak = Usd.max peak_pnl pnl in
-      Option.some_if Usd.(peak - pnl > p.max_drawdown) (Reason.Max_drawdown { pnl; peak }))
-  in
-  let action_rate =
-    Option.bind actions_last_second ~f:(fun actions ->
-      Option.some_if
-        (actions > p.max_actions_per_sec)
-        (Reason.Max_action_rate { actions }))
-  in
   if Size.(abs position > p.max_position)
   then Halt (Max_position { position })
   else (
-    match Option.first_some drawdown action_rate with
-    | Some reason -> Halt reason
-    | None ->
-      (match Market_state.mid market, Market_state.age_ms market ~now with
-       | None, _ | _, None -> Halt No_market_data
-       | Some _, Some age_ms when Time_ns.Span.(of_int_ms age_ms > p.max_data_age_ms) ->
-         Halt (Stale_market_data { age_ms })
-       | Some _, Some _ -> Ok))
+    let mid = Market_state.mid_or_null market in
+    let drawdown : Reason.t or_null =
+      match mid with
+      | Null -> Null
+      | This mark ->
+        let pnl = Inventory.total_pnl inventory ~mark in
+        let peak = Usd.max peak_pnl pnl in
+        if Usd.(peak - pnl > p.max_drawdown)
+        then This (Max_drawdown { pnl; peak })
+        else Null
+    in
+    match drawdown with
+    | This reason -> Halt reason
+    | Null ->
+      (match actions_last_second with
+       | This actions when actions > p.max_actions_per_sec ->
+         Halt (Max_action_rate { actions })
+       | This _ | Null ->
+         (match mid, Market_state.age_ms_or_null market ~now with
+          | Null, _ | _, Null -> Halt No_market_data
+          | This _, This age_ms when Time_ns.Span.(of_int_ms age_ms > p.max_data_age_ms)
+            -> Halt (Stale_market_data { age_ms })
+          | This _, This _ -> Ok)))
+;;
+
+let check ?actions_last_second p ~now ~peak_pnl market inventory =
+  check_or_null
+    ~actions_last_second:
+      (match actions_last_second with
+       | None -> Null
+       | Some n -> This n)
+    p
+    ~now
+    ~peak_pnl
+    market
+    inventory
 ;;
 
 let cancel_all (p : Params.t) ~open_orders =

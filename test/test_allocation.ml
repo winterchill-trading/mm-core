@@ -86,7 +86,26 @@ let%expect_test "minor words per Strategy.tick" =
     (List.length plan);
   [%expect
     {|
-    no change: 53 words, 0 actions
-    requote: 3399 words, 12 actions
+    no change: 47 words, 0 actions
+    requote: 3393 words, 12 actions
     |}]
+;;
+
+let%expect_test "minor words per Risk.check_or_null" =
+  let s = quoted () in
+  let check actions_last_second =
+    words_per_call (fun () ->
+      Risk.check_or_null
+        ~actions_last_second
+        Params.btc
+        ~now:(ms 1)
+        ~peak_pnl:(Strategy.peak_pnl s)
+        (Strategy.market s)
+        (Strategy.inventory s))
+  in
+  printf
+    "unchecked rate: %d words, checked rate: %d words\n"
+    (check Null)
+    (check (This 3));
+  [%expect {| unchecked rate: 0 words, checked rate: 0 words |}]
 ;;

@@ -62,6 +62,17 @@ val check
   -> Inventory.t
   -> t
 
+(** [check] with the action count as [This n] or [Null] (not checked). Allocates nothing
+    when the result is [Ok]. *)
+val check_or_null
+  :  actions_last_second:int or_null
+  -> Params.t
+  -> now:int
+  -> peak_pnl:Usd.t
+  -> Market_state.t
+  -> Inventory.t
+  -> t
+
 (** Cancels every resting order on the symbol and, when there is a position and a mid,
     sends a reduce-only IOC for the whole position at [mid -/+ flatten_slippage_bps]
     (rounded away from the mid to the tick), with client id level
