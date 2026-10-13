@@ -65,6 +65,10 @@ val on_resync : t -> now:int -> t
 
 val tick : t -> now:int -> t * Action.t list
 
+(** [tick] returning an unboxed pair. A tick that sends nothing and changes no field
+    allocates nothing and returns its argument. *)
+val tick_u : t -> now:int -> #(t * Action.t list)
+
 (** Swaps the parameters of a running strategy, keeping its market state, inventory,
     resting orders, generation, mode and action history. The next [tick] requotes (unless
     a plan still awaits its snapshot), so the reconciler keeps the resting orders that

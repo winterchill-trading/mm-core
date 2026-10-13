@@ -120,9 +120,12 @@ let should_requote t ~now ~was_running =
       | None -> true
       | Some p -> not (Size.equal p (Inventory.position t.inventory)))
   ||
-  match t.last_quoted_mid, Market_state.mid t.market with
-  | Some last, Some mid ->
-    Float.(abs (Fx.bps_between ~base:last mid) >= t.params.requote_threshold_bps)
+  match t.last_quoted_mid, Market_state.mid_or_null t.market with
+  | Some last, This mid ->
+    let moved =
+      Stdlib_upstream_compatible.Float_u.to_float (Fx.bps_between_u ~base:last mid)
+    in
+    Float.(abs moved >= t.params.requote_threshold_bps)
   | _ -> true
 ;;
 
@@ -160,15 +163,18 @@ let emit t ~now plan =
     , plan ))
 ;;
 
-let tick t ~now =
+(* A tick that sends nothing returns [t] itself (or a copy only where a field changed) and
+   allocates nothing; [tick] boxes the pair. *)
+let tick_u t ~now =
   let t =
-    match Market_state.mid t.market with
-    | Some mark ->
-      { t with peak_pnl = Usd.max t.peak_pnl (Inventory.total_pnl t.inventory ~mark) }
-    | None -> t
+    match Market_state.mid_or_null t.market with
+    | This mark ->
+      let pnl = Inventory.total_pnl t.inventory ~mark in
+      if Usd.(pnl > t.peak_pnl) then { t with peak_pnl = pnl } else t
+    | Null -> t
   in
   match t.awaiting_ack_since with
-  | Some since when now - since < ns t.params.requote_interval_ms -> t, []
+  | Some since when now - since < ns t.params.requote_interval_ms -> #(t, [])
   | _ ->
     let unacknowledged = Option.is_some t.awaiting_ack_since in
     let t =
@@ -187,11 +193,11 @@ let tick t ~now =
       | Halted _ as halted -> halted
       | Running | Pulled _ ->
         (match
-           Risk.check
-             ?actions_last_second:
+           Risk.check_or_null
+             ~actions_last_second:
                (if in_grace t ~now
-                then None
-                else Some (Risk.Action_rate.last_second t.action_rate ~now))
+                then Null
+                else This (Risk.Action_rate.last_second t.action_rate ~now))
              t.params
              ~now
              ~peak_pnl:t.peak_pnl
@@ -208,7 +214,11 @@ let tick t ~now =
       | (Running | Pulled _), Halted _ -> Some now
       | _, (Running | Pulled _) -> None
     in
-    let t = { t with mode; halted_at } in
+    let t =
+      if phys_equal mode t.mode && phys_equal halted_at t.halted_at
+      then t
+      else { t with mode; halted_at }
+    in
     (match mode with
      | Halted _ ->
        if interval_elapsed t ~now
@@ -222,12 +232,16 @@ let tick t ~now =
              t.inventory
          in
          let t, plan = emit t ~now plan in
-         if List.is_empty plan then t, [] else { t with last_plan_at = Some now }, plan)
-       else t, []
-     | Pulled _ -> emit t ~now (Risk.cancel_all t.params ~open_orders:t.open_orders)
+         if List.is_empty plan
+         then #(t, [])
+         else #({ t with last_plan_at = Some now }, plan))
+       else #(t, [])
+     | Pulled _ ->
+       let t, plan = emit t ~now (Risk.cancel_all t.params ~open_orders:t.open_orders) in
+       #(t, plan)
      | Running ->
        if not (should_requote t ~now ~was_running)
-       then t, []
+       then #(t, [])
        else (
          let bump_left = Size.(max zero (t.params.bump_budget - t.bump_used)) in
          let desired = Quoter.quote ~bump_left t.params t.market t.inventory in
@@ -254,7 +268,13 @@ let tick t ~now =
            ; last_quoted_position = Some (Inventory.position t.inventory)
            }
          in
-         emit t ~now plan))
+         let t, plan = emit t ~now plan in
+         #(t, plan)))
+;;
+
+let tick t ~now =
+  let #(t, plan) = tick_u t ~now in
+  t, plan
 ;;
 
 let update_params t (params : Params.t) =

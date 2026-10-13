@@ -78,6 +78,13 @@ let%expect_test "minor words per Strategy.tick" =
     "no change: %d words, %d actions\n"
     (words_per_call (fun () -> Strategy.tick s ~now:(ms 1)))
     (List.length plan);
+  printf
+    "no change, unboxed pair: %d words, same state %b\n"
+    (words_per_call (fun () ->
+       let #(s, _) = Strategy.tick_u s ~now:(ms 1) in
+       s))
+    (let #(s', _) = Strategy.tick_u s ~now:(ms 1) in
+     phys_equal s s');
   let moved = Strategy.on_book s (book ~time:(ms 2) ~bid:"99890" ~ask:"99910" ()) in
   let _, plan = Strategy.tick moved ~now:(ms 3) in
   printf
@@ -86,8 +93,9 @@ let%expect_test "minor words per Strategy.tick" =
     (List.length plan);
   [%expect
     {|
-    no change: 47 words, 0 actions
-    requote: 3393 words, 12 actions
+    no change: 3 words, 0 actions
+    no change, unboxed pair: 0 words, same state true
+    requote: 3352 words, 12 actions
     |}]
 ;;
 
