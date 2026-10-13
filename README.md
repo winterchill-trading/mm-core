@@ -220,7 +220,52 @@ timer in this library was checked for work left behind:
   timeout here: the adapters own them. A venue call that never answers blocks the
   sequencer, and `stop` waits for it.
 
- is a simplified Avellaneda-Stoikov market maker. All spreads are in basis
+## Allocation on the hot path
+
+The strategy stays a persistent value (replay and shadow runs keep old states), so the
+allocation work is inside each step:
+
+- `Market_state.t` is one flat block: the variance and EWMA weight are unboxed
+  `Float_u.t` fields, mid, microprice and the book are `or_null`. `on_book` allocates the
+  new record (8 words) and nothing else; `mid_or_null`, `microprice_or_null`,
+  `best_bid_or_null`, `best_ask_or_null`, `vol_bps_u` and `age_ms_or_null` are
+  `[@@zero_alloc]`. The option accessors remain and allocate the `Some`.
+- `Fx.price_to_float_u`, `size_to_float_u`, `price_of_float_u`, `shift_bps_u` and
+  `bps_between_u` give the same results as the boxed conversions without boxing across
+  the call (`[@@zero_alloc]`).
+- `Quoter.quote` keeps the model terms in unboxed locals and conses each side's quotes in
+  level order onto the list that follows, so it allocates only the result: 6 quotes are 48
+  words. `For_testing.explain` keeps its per-rung records, built into arrays.
+- `Risk.check_or_null` allocates nothing when the result is `Ok`.
+- `Strategy.tick_u` returns an unboxed pair; a tick that sends nothing returns its
+  argument and allocates nothing. `tick` boxes the pair (3 words). The live loop uses
+  `tick_u`.
+
+`test/test_allocation.ml` pins the words per call. `test/test_bisimulation.ml` runs the
+library against the pure implementation as it was before this work (`test/ref_*.ml`): 300
+random scripts of books, fills, acknowledgements, reconnects, ticks and parameter changes
+must give the same plans and the same state sexp after every event, and 20,000 random
+quoter cases the same quotes and unquoted reasons.
+
+core_bench on an M-series Mac (arm64; CI is amd64), `bench/main.exe -quota 3`, time and
+minor words per run (the bench closure adds 3 words to every row):
+
+| Case | dev before | dev after | release before | release after | `-O3` before | `-O3` after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `quote` flat | 470 ns, 357 w | 229 ns, 51 w | 332 ns, 357 w | 204 ns, 51 w | 227 ns, 287 w | 107 ns, 51 w |
+| `quote` + `reconcile` | 1357 ns, 748 w | 1039 ns, 442 w | 1031 ns, 748 w | 862 ns, 442 w | 746 ns, 591 w | 624 ns, 355 w |
+| `Market_state.on_book` | 40 ns, 42 w | 22 ns, 11 w | 28 ns, 42 w | 19 ns, 11 w | 6 ns, 5 w | 6 ns, 3 w |
+| `tick`, nothing to send | 69 ns, 48 w | 58 ns, 6 w | 122 ns, 48 w | 49 ns, 6 w | 23 ns, 40 w | 16 ns, 3 w |
+| `tick_u`, nothing to send | | 56 ns, 3 w | | 48 ns, 3 w | | 16 ns, 3 w |
+| `on_book` + `tick`, requote | 447 ns, 290 w | 278 ns, 242 w | 389 ns, 290 w | 262 ns, 242 w | 250 ns, 260 w | 189 ns, 227 w |
+
+Other agents shared the machine during these runs; differences under about 10% are noise,
+words are exact. What is left on a requote is mostly `Reconciler.reconcile` (client order
+ids and the plan list).
+
+## Strategy
+
+The quoter is a simplified Avellaneda-Stoikov market maker. All spreads are in basis
 points (bps) of the price.
 
 ### Market inputs
