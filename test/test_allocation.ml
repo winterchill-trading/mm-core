@@ -35,8 +35,8 @@ let%expect_test "minor words per Quoter.quote" =
         (words_per_call (fun () -> Quoter.quote params market inventory))
         (List.length (Quoter.quote params market inventory)));
   [%expect {|
-    flat: 354 words, 6 quotes
-    long: 354 words, 6 quotes
+    flat: 350 words, 6 quotes
+    long: 350 words, 6 quotes
     |}]
 ;;
 
@@ -45,7 +45,7 @@ let%expect_test "minor words per Market_state.on_book" =
   let market = Market_state.on_book market (book ~bid:"99990" ~ask:"100010" ()) in
   let next = book ~time:1 ~bid:"99991" ~ask:"100011" ~bid_sz:"1.2" ~ask_sz:"0.7" () in
   printf "%d words\n" (words_per_call (fun () -> Market_state.on_book market next));
-  [%expect {| 39 words |}]
+  [%expect {| 22 words |}]
 ;;
 
 (* A running strategy that has just quoted and seen its orders rest. *)
@@ -86,7 +86,7 @@ let%expect_test "minor words per Strategy.tick" =
     (List.length plan);
   [%expect
     {|
-    no change: 45 words, 0 actions
-    requote: 3393 words, 12 actions
+    no change: 53 words, 0 actions
+    requote: 3399 words, 12 actions
     |}]
 ;;

@@ -1,6 +1,11 @@
 (library
  (name mm_core)
  (public_name mm-core)
- (libraries core async exchange-core fixed-decimal)
+ (libraries
+  core
+  async
+  exchange-core
+  fixed-decimal
+  stdlib_upstream_compatible)
  (preprocess
   (pps ppx_jane)))
