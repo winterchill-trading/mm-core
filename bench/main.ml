@@ -100,6 +100,9 @@ let () =
            ignore (Market_state.on_book market next_book : Market_state.t))
        ; Bench.Test.create ~name:"strategy tick (no change)" (fun () ->
            ignore (Strategy.tick quoted ~now:1 : Strategy.t * Action.t list))
+       ; Bench.Test.create ~name:"strategy tick_u (no change)" (fun () ->
+           let #(s, _) = Strategy.tick_u quoted ~now:1 in
+           ignore (s : Strategy.t))
        ; Bench.Test.create ~name:"strategy on_book+tick (requote)" (fun () ->
            ignore
              (Strategy.tick (Strategy.on_book quoted next_book) ~now:10_000_000_000
