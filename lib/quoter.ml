@@ -50,18 +50,21 @@ let model (p : Params.t) market inventory =
   | _ -> None
 ;;
 
-(* Sizes for each level given the room left on a side. *)
+(* Sizes for each level given the room left on a side, level 0 first. *)
 let level_sizes (p : Params.t) ~room =
-  let rec go level room acc =
+  let sizes = Array.create ~len:(Int.max 0 p.levels) Size.zero in
+  let rec fill level room =
     if level >= p.levels
-    then List.rev acc
+    then level
     else (
       let sz = Fx.size_floor (Size.min p.order_size room) ~lot:p.lot in
       if Size.is_positive sz
-      then go (level + 1) Size.(room - sz) (sz :: acc)
-      else List.rev acc)
+      then (
+        sizes.(level) <- sz;
+        fill (level + 1) Size.(room - sz))
+      else level)
   in
-  if Size.is_positive room then go 0 room [] else []
+  Array.sub sizes ~pos:0 ~len:(fill 0 room)
 ;;
 
 module Rung = struct
@@ -97,7 +100,8 @@ end
 (* The ladder of one side: each rung's price terms, before dropping non-positive prices. *)
 let rungs (p : Params.t) (m : Model.t) ~best_bid ~best_ask ~sizes (side : Side.t) =
   let distance level = m.half_spread_bps +. (Float.of_int level *. p.level_spacing_bps) in
-  List.folding_mapi sizes ~init:None ~f:(fun level prev sz ->
+  let prev = ref None in
+  Array.mapi sizes ~f:(fun level sz ->
     let distance_bps = distance level in
     let rung =
       match side with
@@ -109,7 +113,8 @@ let rungs (p : Params.t) (m : Model.t) ~best_bid ~best_ask ~sizes (side : Side.t
             Price.min px Price.(ask - p.tick))
         in
         let px =
-          Option.fold prev ~init:px ~f:(fun px prev -> Price.min px Price.(prev - p.tick))
+          Option.fold !prev ~init:px ~f:(fun px prev ->
+            Price.min px Price.(prev - p.tick))
         in
         { Rung.side; level; distance_bps; target; rounded; px; sz }
       | Sell ->
@@ -120,11 +125,13 @@ let rungs (p : Params.t) (m : Model.t) ~best_bid ~best_ask ~sizes (side : Side.t
             Price.max px Price.(bid + p.tick))
         in
         let px =
-          Option.fold prev ~init:px ~f:(fun px prev -> Price.max px Price.(prev + p.tick))
+          Option.fold !prev ~init:px ~f:(fun px prev ->
+            Price.max px Price.(prev + p.tick))
         in
         { Rung.side; level; distance_bps; target; rounded; px; sz }
     in
-    Some rung.px, rung)
+    prev := Some rung.px;
+    rung)
 ;;
 
 let room (m : Model.t) ~position (side : Side.t) =
@@ -140,47 +147,6 @@ let soft_room (p : Params.t) ~bump_left ~position (side : Side.t) =
     match side with
     | Buy -> Size.(limit - position)
     | Sell -> Size.(limit + position))
-;;
-
-(* Quotes of one side, or why there are none. *)
-let side_ladder (p : Params.t) (m : Model.t) market ~bump_left ~position side =
-  let hard_room = room m ~position side in
-  let soft_room = soft_room p ~bump_left ~position side in
-  let room = Option.fold soft_room ~init:hard_room ~f:Size.min in
-  let sizes = level_sizes p ~room in
-  let rungs =
-    rungs
-      p
-      m
-      ~best_bid:(Market_state.best_bid market)
-      ~best_ask:(Market_state.best_ask market)
-      ~sizes
-      side
-  in
-  let quotes =
-    List.filter_map rungs ~f:(fun (r : Rung.t) ->
-      Option.some_if
-        (Price.is_positive r.px)
-        { Quote.side = r.side; level = r.level; px = r.px; sz = r.sz })
-  in
-  let reason : Unquoted.t option =
-    if not (List.is_empty quotes)
-    then None
-    else if not (Size.is_positive hard_room)
-    then Some (At_limit { position; capacity = m.capacity })
-    else if Option.exists soft_room ~f:(fun soft -> Size.(soft < p.lot))
-    then
-      Some
-        (Soft_limit
-           { position
-           ; soft_max_position = Option.value_exn p.soft_max_position
-           ; bump_left
-           })
-    else if List.is_empty rungs
-    then Some (Room_below_lot { room })
-    else Some Non_positive_price
-  in
-  rungs, quotes, reason
 ;;
 
 (* The hot path. [quote] and [quote_with_reasons] compute the same ladder as [side_ladder]
@@ -373,6 +339,26 @@ let unquoted ?bump_left p market inventory =
   snd (quote_with_reasons ?bump_left p market inventory)
 ;;
 
+(* Every rung of one side for [explain], and the reason when none has a positive price. *)
+let explained_side (p : Params.t) (m : Model.t) market ~bump_left ~position side =
+  let room = side_room p ~capacity:m.capacity ~bump_left ~position side in
+  let rungs =
+    rungs
+      p
+      m
+      ~best_bid:(Market_state.best_bid market)
+      ~best_ask:(Market_state.best_ask market)
+      ~sizes:(level_sizes p ~room)
+      side
+  in
+  let reason =
+    if Array.exists rungs ~f:(fun (r : Rung.t) -> Price.is_positive r.px)
+    then None
+    else Some (reason p ~capacity:m.capacity ~bump_left ~position side)
+  in
+  rungs, reason
+;;
+
 module For_testing = struct
   let explain ?bump_left (p : Params.t) market inventory =
     let bump_left = Option.value bump_left ~default:p.bump_budget in
@@ -431,7 +417,7 @@ module For_testing = struct
          m.half_spread_bps
          p.base_half_spread_bps;
        List.iter [ Side.Buy; Sell ] ~f:(fun side ->
-         let rungs, _, reason = side_ladder p m market ~bump_left ~position side in
+         let rungs, reason = explained_side p m market ~bump_left ~position side in
          line
            1
            "%s: room %s%s"
@@ -447,7 +433,7 @@ module For_testing = struct
                 (Size.to_string soft)
                 (Size.to_string (Option.value_exn p.soft_max_position))
                 (Size.to_string bump_left));
-         List.iter rungs ~f:(fun (r : Rung.t) ->
+         Array.iter rungs ~f:(fun (r : Rung.t) ->
            line
              2
              "L%d %s @ %s: distance %.4f bps, target %s, on tick %s%s"
