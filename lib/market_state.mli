@@ -33,16 +33,17 @@ val best_ask : t -> Price.t option
 (** The accessors above without the option: they allocate nothing, where [mid],
     [microprice], [best_bid] and [best_ask] allocate the [Some]. *)
 
-val mid_or_null : t -> Price.t or_null
-val microprice_or_null : t -> Price.t or_null
-val best_bid_or_null : t -> Price.t or_null
-val best_ask_or_null : t -> Price.t or_null
+val mid_or_null : t -> Price.t or_null [@@zero_alloc]
+val microprice_or_null : t -> Price.t or_null [@@zero_alloc]
+val best_bid_or_null : t -> Price.t or_null [@@zero_alloc]
+val best_ask_or_null : t -> Price.t or_null [@@zero_alloc]
 
 (** Per-update volatility of mid log returns, in bps. [0.] before two two-sided books. *)
 val vol_bps : t -> float
 
 (** [vol_bps], unboxed. *)
 val vol_bps_u : t -> Stdlib_upstream_compatible.Float_u.t
+[@@zero_alloc]
 
 (** Number of returns folded into the volatility estimate. *)
 val vol_samples : t -> int
@@ -60,3 +61,4 @@ val age_ms : t -> now:int -> int option
 
 (** [age_ms] without the option. *)
 val age_ms_or_null : t -> now:int -> int or_null
+[@@zero_alloc]
