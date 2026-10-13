@@ -41,7 +41,7 @@ let mid_and_micro (book : L2.t) =
     let micro =
       if Float.(bs +. as_ <= 0.)
       then mid
-      else Price.of_float (((b *. as_) +. (a *. bs)) /. (bs +. as_))
+      else (Price.of_float [@alert "-lossy"]) (((b *. as_) +. (a *. bs)) /. (bs +. as_))
     in
     Some mid, Some micro
   | _ -> None, None

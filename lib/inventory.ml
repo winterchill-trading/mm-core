@@ -37,7 +37,7 @@ let apply_trade t ~(side : Side.t) ~(px : Price.t) ~(sz : Size.t) =
     and ad = Size.to_float (Size.abs d) in
     let entry = Option.value_map t.avg_entry ~default:0. ~f:Price.to_float in
     let avg = ((ax *. entry) +. (ad *. Price.to_float px)) /. (ax +. ad) in
-    { t with position = x'; avg_entry = Some (Price.of_float avg) })
+    { t with position = x'; avg_entry = Some ((Price.of_float [@alert "-lossy"]) avg) })
   else (
     let closed = Size.min (Size.abs x) (Size.abs d) in
     let entry = Option.value t.avg_entry ~default:px in

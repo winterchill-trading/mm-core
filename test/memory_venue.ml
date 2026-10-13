@@ -154,7 +154,9 @@ let push_fill t (fill : Fill.t) =
         { fill with
           trade_id = Trade_id.of_int ((Trade_id.to_int fill.trade_id * 100) + i)
         ; size
-        ; fee = Usd.of_float (Usd.to_float fill.fee *. Size.to_float size /. total)
+        ; fee =
+            (Usd.of_float [@alert "-lossy"])
+              (Usd.to_float fill.fee *. Size.to_float size /. total)
         })
 ;;
 

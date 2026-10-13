@@ -256,7 +256,9 @@ let%expect_test "quotes under each parameter preset" =
         2.
     in
     let long =
-      Fx.size_floor (Size.of_float (0.4 *. Size.to_float p.max_position)) ~lot:p.lot
+      Fx.size_floor
+        ((Size.of_float [@alert "-lossy"]) (0.4 *. Size.to_float p.max_position))
+        ~lot:p.lot
     in
     let inv =
       Inventory.on_fill
