@@ -44,11 +44,15 @@ val signed : Side.t -> Size.t -> Size.t
     [Price.to_float], [Size.to_float], [Price.of_float] and {!shift_bps}, without boxing
     the float across the call. *)
 
-val price_to_float_u : Price.t -> Stdlib_upstream_compatible.Float_u.t
-val size_to_float_u : Size.t -> Stdlib_upstream_compatible.Float_u.t
+val price_to_float_u : Price.t -> Stdlib_upstream_compatible.Float_u.t [@@zero_alloc]
+val size_to_float_u : Size.t -> Stdlib_upstream_compatible.Float_u.t [@@zero_alloc]
 
 (** Raises like [Price.of_float] on NaN, infinity or out of range input. *)
 val price_of_float_u : Stdlib_upstream_compatible.Float_u.t -> Price.t
+[@@zero_alloc]
 
 val shift_bps_u : Price.t -> Stdlib_upstream_compatible.Float_u.t -> Price.t
+[@@zero_alloc]
+
 val bps_between_u : base:Price.t -> Price.t -> Stdlib_upstream_compatible.Float_u.t
+[@@zero_alloc]
