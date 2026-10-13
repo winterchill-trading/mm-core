@@ -86,7 +86,9 @@ let default_order_size ?min_notional ~lot ~mid () =
   | None -> Size.of_units around_100
   | Some min_notional ->
     (* comfortably above the venue minimum, so quotes below the mid still pass it *)
-    let target = Usd.of_float (min_notional_safety *. Usd.to_float min_notional) in
+    let target =
+      (Usd.of_float [@alert "-lossy"]) (min_notional_safety *. Usd.to_float min_notional)
+    in
     let units = Size.to_units (Fx.size_of_notional target mid) in
     let units =
       if Usd.(Fx.notional mid (Size.of_units units) < target) then units + 1 else units
@@ -116,7 +118,9 @@ let for_instrument
   ; lot
   ; order_size
   ; max_position
-  ; max_notional = Usd.of_float (1.5 *. Size.to_float max_position *. Price.to_float mid)
+  ; max_notional =
+      (Usd.of_float [@alert "-lossy"])
+        (1.5 *. Size.to_float max_position *. Price.to_float mid)
   }
 ;;
 
