@@ -301,7 +301,7 @@ module Make (V : Venue.S) = struct
       let book_at = t.book_waiting_since in
       t.book_waiting_since <- None;
       let mode_before = Strategy.mode t.strategy in
-      let strategy, plan = Strategy.tick t.strategy ~now:(now_ns t) in
+      let #(strategy, plan) = Strategy.tick_u t.strategy ~now:(now_ns t) in
       t.strategy <- strategy;
       let mode = Strategy.mode strategy in
       if not (Strategy.Mode.equal mode mode_before)
