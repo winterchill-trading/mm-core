@@ -9,7 +9,9 @@ let size_of_notional usd px =
   if Price.is_positive px then Quantity.div usd px else Size.zero
 ;;
 
-let shift_bps px bps = Price.of_float (Price.to_float px *. (1. +. (bps /. 10_000.)))
+let shift_bps px bps =
+  (Price.of_float [@alert "-lossy"]) (Price.to_float px *. (1. +. (bps /. 10_000.)))
+;;
 
 let bps_between ~base px =
   let b = Price.to_float base in
@@ -42,4 +44,28 @@ let signed (side : Side.t) sz =
   match side with
   | Buy -> sz
   | Sell -> Size.neg sz
+;;
+
+module Float_u = Stdlib_upstream_compatible.Float_u
+
+(* The same arithmetic as [Price.to_float] and [Price.of_float], done here so that the
+   result or argument stays unboxed across the module boundary. *)
+let price_scale = Float.of_int (Price.to_units (Price.of_int 1))
+let size_scale = Float.of_int (Size.to_units (Size.of_int 1))
+
+let price_to_float_u px =
+  Float_u.of_float (Float.of_int (Price.to_units px) /. price_scale)
+;;
+
+let size_to_float_u sz = Float_u.of_float (Float.of_int (Size.to_units sz) /. size_scale)
+
+let price_of_float_u f =
+  Price.of_units (Float.iround_nearest_exn (Float_u.to_float f *. price_scale))
+;;
+
+let shift_bps_u px bps =
+  let bps = Float_u.to_float bps in
+  price_of_float_u
+    (Float_u.of_float
+       (Float_u.to_float (price_to_float_u px) *. (1. +. (bps /. 10_000.))))
 ;;
