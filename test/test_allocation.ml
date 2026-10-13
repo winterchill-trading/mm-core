@@ -45,7 +45,7 @@ let%expect_test "minor words per Market_state.on_book" =
   let market = Market_state.on_book market (book ~bid:"99990" ~ask:"100010" ()) in
   let next = book ~time:1 ~bid:"99991" ~ask:"100011" ~bid_sz:"1.2" ~ask_sz:"0.7" () in
   printf "%d words\n" (words_per_call (fun () -> Market_state.on_book market next));
-  [%expect {| 22 words |}]
+  [%expect {| 8 words |}]
 ;;
 
 (* A running strategy that has just quoted and seen its orders rest. *)

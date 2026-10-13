@@ -53,13 +53,13 @@ let mid_of (bid : L2.Level.t) (ask : L2.Level.t) =
 ;;
 
 let micro_of (bid : L2.Level.t) (ask : L2.Level.t) ~mid =
-  let b = Price.to_float bid.px
-  and a = Price.to_float ask.px
-  and bs = Size.to_float bid.sz
-  and as_ = Size.to_float ask.sz in
+  let b = Float_u.to_float (Fx.price_to_float_u bid.px)
+  and a = Float_u.to_float (Fx.price_to_float_u ask.px)
+  and bs = Float_u.to_float (Fx.size_to_float_u bid.sz)
+  and as_ = Float_u.to_float (Fx.size_to_float_u ask.sz) in
   if Float.(bs +. as_ <= 0.)
   then mid
-  else (Price.of_float [@alert "-lossy"]) (((b *. as_) +. (a *. bs)) /. (bs +. as_))
+  else Fx.price_of_float_u (Float_u.of_float (((b *. as_) +. (a *. bs)) /. (bs +. as_)))
 ;;
 
 let on_book t (book : L2.t) =
@@ -69,7 +69,11 @@ let on_book t (book : L2.t) =
     let microprice = micro_of bid ask ~mid in
     (match t.mid with
      | This prev when Price.is_positive prev && Price.is_positive mid ->
-       let r = Float.log (Price.to_float mid /. Price.to_float prev) in
+       let r =
+         Float.log
+           (Float_u.to_float (Fx.price_to_float_u mid)
+            /. Float_u.to_float (Fx.price_to_float_u prev))
+       in
        let r2 = Float_u.of_float (r *. r) in
        let var =
          if t.vol_samples = 0
