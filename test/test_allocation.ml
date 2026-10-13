@@ -35,8 +35,8 @@ let%expect_test "minor words per Quoter.quote" =
         (words_per_call (fun () -> Quoter.quote params market inventory))
         (List.length (Quoter.quote params market inventory)));
   [%expect {|
-    flat: 350 words, 6 quotes
-    long: 350 words, 6 quotes
+    flat: 48 words, 6 quotes
+    long: 48 words, 6 quotes
     |}]
 ;;
 
@@ -95,7 +95,7 @@ let%expect_test "minor words per Strategy.tick" =
     {|
     no change: 3 words, 0 actions
     no change, unboxed pair: 0 words, same state true
-    requote: 3352 words, 12 actions
+    requote: 3050 words, 12 actions
     |}]
 ;;
 

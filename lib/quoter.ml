@@ -183,23 +183,190 @@ let side_ladder (p : Params.t) (m : Model.t) market ~bump_left ~position side =
   rungs, quotes, reason
 ;;
 
-let quote_with_reasons ?bump_left (p : Params.t) market inventory =
-  let bump_left = Option.value bump_left ~default:p.bump_budget in
-  match model p market inventory with
-  | None -> [], [ Side.Buy, Unquoted.No_book; Sell, No_book ]
-  | Some m ->
-    let position = Inventory.position inventory in
-    let _, bids, bid_reason = side_ladder p m market ~bump_left ~position Buy in
-    let _, asks, ask_reason = side_ladder p m market ~bump_left ~position Sell in
-    ( bids @ asks
-    , List.filter_opt
-        [ Option.map bid_reason ~f:(fun r -> Side.Buy, r)
-        ; Option.map ask_reason ~f:(fun r -> Side.Sell, r)
-        ] )
+(* The hot path. [quote] and [quote_with_reasons] compute the same ladder as [side_ladder]
+   (which [explain] keeps for its per-rung terms) without building rungs, sizes or a
+   [Model.t]: the model terms stay in unboxed locals and each side's quotes are consed in
+   level order straight onto the list that follows them. *)
+
+module Float_u = Stdlib_upstream_compatible.Float_u
+
+(* Capacity, reservation price and half-spread (bps) of [model]. *)
+let terms (p : Params.t) market inventory ~microprice ~mid =
+  let vol_bps =
+    Float.min (Float_u.to_float (Market_state.vol_bps_u market)) p.max_vol_bps
+  in
+  let capacity = capacity p ~mid in
+  let excess = Size.(Inventory.position inventory - p.inventory_target) in
+  let inventory_ratio =
+    if Size.is_positive capacity
+    then
+      Float.clamp_exn
+        (Float_u.to_float (Fx.size_to_float_u excess)
+         /. Float_u.to_float (Fx.size_to_float_u capacity))
+        ~min:(-1.)
+        ~max:1.
+    else 0.
+  in
+  let v = p.gamma *. vol_bps *. vol_bps in
+  let reservation =
+    Fx.shift_bps_u microprice (Float_u.of_float (-.inventory_ratio *. (p.skew_bps +. v)))
+  in
+  #(capacity, reservation, Float_u.of_float (p.base_half_spread_bps +. (v /. 2.)))
 ;;
 
-let quote ?bump_left p market inventory =
-  fst (quote_with_reasons ?bump_left p market inventory)
+(* [limit] less the position for bids, plus it for asks: what [side] may still add. *)
+let room_under limit ~position (side : Side.t) =
+  match side with
+  | Buy -> Size.(limit - position)
+  | Sell -> Size.(limit + position)
+;;
+
+let side_room (p : Params.t) ~capacity ~bump_left ~position side =
+  let hard = room_under capacity ~position side in
+  match p.soft_max_position with
+  | None -> hard
+  | Some soft -> Size.min hard (room_under Size.(soft + bump_left) ~position side)
+;;
+
+(* Quotes of [side] from [level] on, in level order, followed by [tail]. [prev] is the
+   final price of the level before, kept even when it was not positive. *)
+let rec ladder
+  (p : Params.t)
+  (side : Side.t)
+  ~reservation
+  ~(half_spread : Float_u.t)
+  ~(touch : Price.t or_null)
+  ~(prev : Price.t or_null)
+  ~level
+  ~room
+  ~tail
+  =
+  if level >= p.levels
+  then tail
+  else (
+    let sz = Fx.size_floor (Size.min p.order_size room) ~lot:p.lot in
+    if not (Size.is_positive sz)
+    then tail
+    else (
+      let distance_bps =
+        Float_u.to_float half_spread +. (Float.of_int level *. p.level_spacing_bps)
+      in
+      let px =
+        match side with
+        | Buy ->
+          let target = Fx.shift_bps_u reservation (Float_u.of_float (-.distance_bps)) in
+          let px = Fx.price_floor target ~tick:p.tick in
+          let px =
+            match touch with
+            | This ask -> Price.min px Price.(ask - p.tick)
+            | Null -> px
+          in
+          (match prev with
+           | This prev -> Price.min px Price.(prev - p.tick)
+           | Null -> px)
+        | Sell ->
+          let target = Fx.shift_bps_u reservation (Float_u.of_float distance_bps) in
+          let px = Fx.price_ceil target ~tick:p.tick in
+          let px =
+            match touch with
+            | This bid -> Price.max px Price.(bid + p.tick)
+            | Null -> px
+          in
+          (match prev with
+           | This prev -> Price.max px Price.(prev + p.tick)
+           | Null -> px)
+      in
+      let rest =
+        ladder
+          p
+          side
+          ~reservation
+          ~half_spread
+          ~touch
+          ~prev:(This px)
+          ~level:(level + 1)
+          ~room:Size.(room - sz)
+          ~tail
+      in
+      if Price.is_positive px then { Quote.side; level; px; sz } :: rest else rest))
+;;
+
+(* Why [side] got no quotes, given that it got none. *)
+let reason (p : Params.t) ~capacity ~bump_left ~position (side : Side.t) : Unquoted.t =
+  let room = side_room p ~capacity ~bump_left ~position side in
+  match p.soft_max_position with
+  | _ when not (Size.is_positive (room_under capacity ~position side)) ->
+    At_limit { position; capacity }
+  | Some soft when Size.(room_under (soft + bump_left) ~position side < p.lot) ->
+    Soft_limit { position; soft_max_position = soft; bump_left }
+  | Some _ | None ->
+    if p.levels <= 0
+       || not (Size.is_positive (Fx.size_floor (Size.min p.order_size room) ~lot:p.lot))
+    then Room_below_lot { room }
+    else Non_positive_price
+;;
+
+(* Bids then asks, and whether the bid side is empty. *)
+let both_sides (p : Params.t) market inventory ~bump_left ~microprice ~mid =
+  let #(capacity, reservation, half_spread) = terms p market inventory ~microprice ~mid in
+  let position = Inventory.position inventory in
+  let asks =
+    ladder
+      p
+      Sell
+      ~reservation
+      ~half_spread
+      ~touch:(Market_state.best_bid_or_null market)
+      ~prev:Null
+      ~level:0
+      ~room:(side_room p ~capacity ~bump_left ~position Sell)
+      ~tail:[]
+  in
+  let quotes =
+    ladder
+      p
+      Buy
+      ~reservation
+      ~half_spread
+      ~touch:(Market_state.best_ask_or_null market)
+      ~prev:Null
+      ~level:0
+      ~room:(side_room p ~capacity ~bump_left ~position Buy)
+      ~tail:asks
+  in
+  #(quotes, phys_equal quotes asks, List.is_empty asks, capacity, position)
+;;
+
+let quote ?bump_left (p : Params.t) market inventory =
+  let bump_left =
+    match bump_left with
+    | Some b -> b
+    | None -> p.bump_budget
+  in
+  match Market_state.microprice_or_null market, Market_state.mid_or_null market with
+  | This microprice, This mid ->
+    let #(quotes, _, _, _, _) =
+      both_sides p market inventory ~bump_left ~microprice ~mid
+    in
+    quotes
+  | _ -> []
+;;
+
+let quote_with_reasons ?bump_left (p : Params.t) market inventory =
+  let bump_left = Option.value bump_left ~default:p.bump_budget in
+  match Market_state.microprice_or_null market, Market_state.mid_or_null market with
+  | This microprice, This mid ->
+    let #(quotes, no_bids, no_asks, capacity, position) =
+      both_sides p market inventory ~bump_left ~microprice ~mid
+    in
+    let why side = side, reason p ~capacity ~bump_left ~position side in
+    ( quotes
+    , (match no_bids, no_asks with
+       | false, false -> []
+       | true, false -> [ why Buy ]
+       | false, true -> [ why Sell ]
+       | true, true -> [ why Buy; why Sell ]) )
+  | _ -> [], [ Side.Buy, Unquoted.No_book; Sell, No_book ]
 ;;
 
 let unquoted ?bump_left p market inventory =
