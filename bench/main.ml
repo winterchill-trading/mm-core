@@ -48,6 +48,37 @@ let resting =
     })
 ;;
 
+let next_book =
+  { L2.symbol = params.symbol
+  ; time = 1
+  ; bids = [ { px = Price.of_int 99_991; sz = Size.of_string "1.2"; n = 2 } ]
+  ; asks = [ { px = Price.of_int 100_011; sz = Size.of_string "0.7"; n = 2 } ]
+  }
+;;
+
+(* A running strategy that has just quoted: the next tick inside the requote interval with
+   an unchanged mid sends nothing. *)
+let quoted =
+  let s = Strategy.on_book (Strategy.create params) { next_book with time = 0 } in
+  let s, plan = Strategy.tick s ~now:0 in
+  let resting =
+    List.filter_mapi plan ~f:(fun i -> function
+      | Action.Place (r : Order_request.t) ->
+        Some
+          { Open_order.symbol = params.symbol
+          ; side = r.side
+          ; px = Option.value_exn r.px
+          ; size = r.size
+          ; orig_size = Some r.size
+          ; order_id = Order_id.of_int i
+          ; client_order_id = r.client_order_id
+          ; timestamp = 0
+          }
+      | Keep _ | Cancel _ -> None)
+  in
+  Strategy.on_open_orders s resting
+;;
+
 let () =
   Command_unix.run
     (Bench.make_command
@@ -65,5 +96,13 @@ let () =
                 ~open_orders:resting
                 ~desired
               : Action.t list))
+       ; Bench.Test.create ~name:"market_state on_book" (fun () ->
+           ignore (Market_state.on_book market next_book : Market_state.t))
+       ; Bench.Test.create ~name:"strategy tick (no change)" (fun () ->
+           ignore (Strategy.tick quoted ~now:1 : Strategy.t * Action.t list))
+       ; Bench.Test.create ~name:"strategy on_book+tick (requote)" (fun () ->
+           ignore
+             (Strategy.tick (Strategy.on_book quoted next_book) ~now:10_000_000_000
+              : Strategy.t * Action.t list))
        ])
 ;;
