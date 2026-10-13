@@ -293,3 +293,92 @@ let%expect_test "modes reached by the random scripts" =
      ("Pulled Stale_market_data" 728) (Running 3556))
     |}]
 ;;
+
+(* The quoter alone over a wider space than the strategy scripts reach: tiny prices (so
+   far rungs go non-positive), one-sided books, soft limits and bump budgets. *)
+let%test_unit "quoter matches the pure reference" =
+  let open Quickcheck.Let_syntax in
+  let lots n = Size.scale Params.btc.lot ~by:n in
+  let gen =
+    let%bind max_lots = Int.gen_incl 1 3_000 in
+    let%map mid = Int.gen_incl 1 300_000
+    and spread = Int.gen_incl 0 50
+    and one_sided = Bool.quickcheck_generator
+    and levels = Int.gen_incl 1 6
+    and order_lots = Int.gen_incl 1 500
+    and position = Int.gen_incl (-max_lots - 10) (max_lots + 10)
+    and soft = Option.quickcheck_generator (Int.gen_incl 1 max_lots)
+    and bump_left = Option.quickcheck_generator (Int.gen_incl 0 50)
+    and half_spread = Float.gen_incl 0. 3_000.
+    and spacing = Float.gen_incl 0. 3_000.
+    and skew = Float.gen_incl 0. 100.
+    and vol_bps = Float.gen_incl 0. 80.
+    and units = Int.gen_incl 1 1_000_000 in
+    let params =
+      { Params.btc with
+        symbol = btc
+      ; levels
+      ; order_size = lots order_lots
+      ; max_position = lots max_lots
+      ; soft_max_position = Option.map soft ~f:lots
+      ; base_half_spread_bps = half_spread
+      ; level_spacing_bps = spacing
+      ; skew_bps = skew
+      ; tick = Price.of_units units
+      }
+    in
+    let level px : L2.Level.t = { px = Price.of_units px; sz = lots 7; n = 1 } in
+    let book : L2.t =
+      { symbol = btc
+      ; time = 0
+      ; bids = [ level (mid * 10_000) ]
+      ; asks = (if one_sided then [] else [ level ((mid + spread) * 10_000) ])
+      }
+    in
+    params, book, position, vol_bps, Option.map bump_left ~f:lots
+  in
+  Quickcheck.test
+    gen
+    ~trials:20_000
+    ~sexp_of:[%sexp_of: Params.t * L2.t * int * float * Size.t option]
+    ~f:(fun (params, book, position, vol_bps, bump_left) ->
+      let inventory =
+        if position = 0
+        then Inventory.empty
+        else
+          Inventory.on_fill
+            Inventory.empty
+            { trade_id = Trade_id.of_int 1
+            ; order_id = Order_id.of_int 1
+            ; client_order_id = None
+            ; symbol = btc
+            ; side = (if position > 0 then Buy else Sell)
+            ; px = Price.of_int 1
+            ; size = lots (abs position)
+            ; fee = Usd.zero
+            ; is_maker = true
+            ; time = 0
+            ; closed_pnl = None
+            }
+      in
+      let market =
+        Market_state.with_vol_bps
+          (Market_state.on_book (Market_state.create ~vol_window:10) book)
+          vol_bps
+      and ref_market =
+        Ref_market_state.with_vol_bps
+          (Ref_market_state.on_book (Ref_market_state.create ~vol_window:10) book)
+          vol_bps
+      in
+      let quotes, reasons =
+        Quoter.quote_with_reasons ?bump_left params market inventory
+      in
+      let ref_quotes, ref_reasons =
+        Ref_quoter.quote_with_reasons ?bump_left params ref_market inventory
+      in
+      [%test_eq: Quote.t list] quotes ref_quotes;
+      [%test_eq: Quote.t list] (Quoter.quote ?bump_left params market inventory) quotes;
+      [%test_eq: Sexp.t]
+        [%sexp (reasons : (Side.t * Quoter.Unquoted.t) list)]
+        [%sexp (ref_reasons : (Side.t * Ref_quoter.Unquoted.t) list)])
+;;
