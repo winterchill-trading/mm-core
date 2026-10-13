@@ -69,3 +69,10 @@ let shift_bps_u px bps =
     (Float_u.of_float
        (Float_u.to_float (price_to_float_u px) *. (1. +. (bps /. 10_000.))))
 ;;
+
+let bps_between_u ~base px =
+  let b = Float_u.to_float (price_to_float_u base) in
+  if Float.( = ) b 0.
+  then #0.
+  else Float_u.of_float ((Float_u.to_float (price_to_float_u px) -. b) /. b *. 10_000.)
+;;

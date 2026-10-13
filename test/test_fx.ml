@@ -18,7 +18,11 @@ let%test_unit "unboxed conversions match the boxed ones" =
       [%test_eq: Price.t]
         (Fx.price_of_float_u (Fx.price_to_float_u px))
         ((Price.of_float [@alert "-lossy"]) (Price.to_float px));
-      [%test_eq: Price.t] (Fx.shift_bps_u px (Float_u.of_float bps)) (Fx.shift_bps px bps))
+      [%test_eq: Price.t] (Fx.shift_bps_u px (Float_u.of_float bps)) (Fx.shift_bps px bps);
+      let base = Price.of_units s in
+      [%test_eq: float]
+        (Float_u.to_float (Fx.bps_between_u ~base px))
+        (Fx.bps_between ~base px))
 ;;
 
 let%expect_test "price_of_float_u raises on NaN like Price.of_float" =

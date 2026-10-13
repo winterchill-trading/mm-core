@@ -51,3 +51,4 @@ val size_to_float_u : Size.t -> Stdlib_upstream_compatible.Float_u.t
 val price_of_float_u : Stdlib_upstream_compatible.Float_u.t -> Price.t
 
 val shift_bps_u : Price.t -> Stdlib_upstream_compatible.Float_u.t -> Price.t
+val bps_between_u : base:Price.t -> Price.t -> Stdlib_upstream_compatible.Float_u.t
