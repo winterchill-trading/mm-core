@@ -56,6 +56,12 @@ type t =
   (** when set, a [Max_action_rate] halt clears this long after it tripped and the
       strategy quotes again; other halts stay permanent (absent in a sexp: none, the halt
       is permanent) *)
+  ; toxicity_gate : Toxicity_gate.Config.t option
+  (** widen, skew or pull quotes on the toxicity signal given to {!Strategy.on_toxicity}
+      (absent in a sexp: none, the signal is ignored) *)
+  ; reference_guard : Reference_guard.Config.t option
+  (** pull quotes while the venue mid strays from the reference given to
+      {!Strategy.on_reference} (absent in a sexp: none, no reference check) *)
   }
 [@@deriving sexp, compare, equal]
 

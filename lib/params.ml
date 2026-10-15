@@ -43,6 +43,8 @@ type t =
   ; action_rate_grace_ms : Ms_span.t
        [@default Time_ns.Span.of_int_ms 5_000] [@sexp_drop_default.equal]
   ; action_rate_cooldown_ms : Ms_span.t option [@sexp.option]
+  ; toxicity_gate : Toxicity_gate.Config.t option [@sexp.option]
+  ; reference_guard : Reference_guard.Config.t option [@sexp.option]
   }
 [@@deriving sexp, compare, equal]
 
@@ -72,6 +74,8 @@ let btc =
   ; bump_budget = Size.zero
   ; action_rate_grace_ms = Time_ns.Span.of_int_sec 5
   ; action_rate_cooldown_ms = None
+  ; toxicity_gate = None
+  ; reference_guard = None
   }
 ;;
 
@@ -151,9 +155,17 @@ let validate t =
       ; bump_budget
       ; action_rate_grace_ms
       ; action_rate_cooldown_ms
+      ; toxicity_gate
+      ; reference_guard
       }
     =
     t
+  in
+  (* The nested configurations name their own problems. *)
+  let nested name validate config =
+    match Option.map config ~f:validate with
+    | None | Some (Ok _) -> []
+    | Some (Error e) -> [ false, name ^ ": " ^ Error.to_string_hum e ]
   in
   let finite =
     List.map
@@ -200,6 +212,8 @@ let validate t =
       ; ( Option.for_all action_rate_cooldown_ms ~f:Time_ns.Span.is_positive
         , "action_rate_cooldown_ms must be positive" )
       ]
+    @ nested "toxicity_gate" Toxicity_gate.Config.validate toxicity_gate
+    @ nested "reference_guard" Reference_guard.Config.validate reference_guard
   in
   match List.filter_map checks ~f:(fun (ok, msg) -> Option.some_if (not ok) msg) with
   | [] -> Ok t
