@@ -357,3 +357,29 @@ let%expect_test "soft limit pulls only the side that grows the position" =
   show ~bump_left:(sz "0.0025") "0.004";
   [%expect {| ((bids 0.0025) (asks 0.003) (reasons ())) |}]
 ;;
+
+let%expect_test "a reservation shift moves the whole ladder; zero changes nothing" =
+  let market = market () in
+  let inv = inventory "0.002" in
+  let prices shift_bps =
+    Quoter.quote ?shift_bps params market inv
+    |> List.map ~f:(fun (q : Quote.t) -> Price.to_string q.px)
+    |> String.concat ~sep:" "
+  in
+  printf "none %s\n" (prices None);
+  printf "0    %s\n" (prices (Some 0.));
+  printf "+5   %s\n" (prices (Some 5.));
+  printf "-5   %s\n" (prices (Some (-5.)));
+  Quoter.For_testing.explain ~shift_bps:5. params market inv
+  |> String.split_lines
+  |> List.filter ~f:(String.is_substring ~substring:"reservation")
+  |> List.iter ~f:print_endline;
+  [%expect
+    {|
+    none 99962 99942 99922 100022 100042 100062
+    0    99962 99942 99922 100022 100042 100062
+    +5   100011 99991 99971 100073 100093 100113
+    -5   99912 99892 99872 99972 99992 100012
+      reservation 100042 = microprice shifted by -q * (skew 4.0000 + v) + shift 5.0000 = 4.2000 bps
+    |}]
+;;
