@@ -11,11 +11,21 @@ module Reason = struct
     | Max_action_rate of { actions : int }
     | No_market_data
     | Stale_market_data of { age_ms : int }
+    | Reference_divergence of
+        { divergence_bps : float
+        ; held_ms : int
+        }
+    | Reference_missing of { age_ms : int option }
+    | Toxic_flow of { signal : float }
   [@@deriving sexp, compare, equal]
 
   let is_sticky = function
     | Max_position _ | Max_drawdown _ | Max_action_rate _ -> true
-    | No_market_data | Stale_market_data _ -> false
+    | No_market_data
+    | Stale_market_data _
+    | Reference_divergence _
+    | Reference_missing _
+    | Toxic_flow _ -> false
   ;;
 end
 

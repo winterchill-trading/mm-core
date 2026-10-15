@@ -10,7 +10,9 @@
     - [Stale_market_data]: [now - book time > max_data_age_ms]
 
     [Max_position], [Max_drawdown] and [Max_action_rate] are sticky: the strategy stays
-    halted and flattens. Missing or stale data only pulls quotes until fresh data arrives. *)
+    halted and flattens. Missing or stale data only pulls quotes until fresh data arrives.
+    {!check} never returns the reference and toxicity reasons; {!Strategy} pulls with them
+    when {!Reference_guard} or {!Toxicity_gate} says so, after these checks pass. *)
 
 open! Core
 open Exchange_core
@@ -26,6 +28,15 @@ module Reason : sig
     (** a runaway loop: [actions] cancels and places in the last second *)
     | No_market_data
     | Stale_market_data of { age_ms : int }
+    | Reference_divergence of
+        { divergence_bps : float
+        ; held_ms : int
+        }
+    (** the venue mid has been outside the reference band for [held_ms]
+        ({!Reference_guard}) *)
+    | Reference_missing of { age_ms : int option }
+    (** a reference guard set to pull without a fresh reference *)
+    | Toxic_flow of { signal : float } (** the toxicity gate's pull threshold *)
   [@@deriving sexp, compare, equal]
 
   val is_sticky : t -> bool
