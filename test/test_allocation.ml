@@ -85,6 +85,8 @@ let%expect_test "minor words per Strategy.tick" =
        s))
     (let #(s', _) = Strategy.tick_u s ~now:(ms 1) in
      phys_equal s s');
+  (* The requote was 3050 words before the strategy record gained the toxicity gate and
+     reference guard fields: every record copy of the tick is four words larger. *)
   let moved = Strategy.on_book s (book ~time:(ms 2) ~bid:"99890" ~ask:"99910" ()) in
   let _, plan = Strategy.tick moved ~now:(ms 3) in
   printf
@@ -95,7 +97,7 @@ let%expect_test "minor words per Strategy.tick" =
     {|
     no change: 3 words, 0 actions
     no change, unboxed pair: 0 words, same state true
-    requote: 3050 words, 12 actions
+    requote: 3061 words, 12 actions
     |}]
 ;;
 
