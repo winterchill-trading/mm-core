@@ -20,7 +20,7 @@ let capacity (p : Params.t) ~mid =
     ~lot:p.lot
 ;;
 
-let model (p : Params.t) market inventory =
+let model ?(shift_bps = 0.) (p : Params.t) market inventory =
   match Market_state.microprice market, Market_state.mid market with
   | Some microprice, Some mid ->
     let vol_bps = Float.min (Market_state.vol_bps market) p.max_vol_bps in
@@ -36,7 +36,9 @@ let model (p : Params.t) market inventory =
       else 0.
     in
     let v = p.gamma *. vol_bps *. vol_bps in
-    let reservation = Fx.shift_bps microprice (-.inventory_ratio *. (p.skew_bps +. v)) in
+    let reservation =
+      Fx.shift_bps microprice ((-.inventory_ratio *. (p.skew_bps +. v)) +. shift_bps)
+    in
     let half_spread_bps = p.base_half_spread_bps +. (v /. 2.) in
     Some
       { Model.microprice
@@ -157,7 +159,7 @@ let soft_room (p : Params.t) ~bump_left ~position (side : Side.t) =
 module Float_u = Stdlib_upstream_compatible.Float_u
 
 (* Capacity, reservation price and half-spread (bps) of [model]. *)
-let terms (p : Params.t) market inventory ~microprice ~mid =
+let terms (p : Params.t) market inventory ~shift_bps ~microprice ~mid =
   let vol_bps =
     Float.min (Float_u.to_float (Market_state.vol_bps_u market)) p.max_vol_bps
   in
@@ -175,7 +177,9 @@ let terms (p : Params.t) market inventory ~microprice ~mid =
   in
   let v = p.gamma *. vol_bps *. vol_bps in
   let reservation =
-    Fx.shift_bps_u microprice (Float_u.of_float (-.inventory_ratio *. (p.skew_bps +. v)))
+    Fx.shift_bps_u
+      microprice
+      (Float_u.of_float ((-.inventory_ratio *. (p.skew_bps +. v)) +. shift_bps))
   in
   #(capacity, reservation, Float_u.of_float (p.base_half_spread_bps +. (v /. 2.)))
 ;;
@@ -273,8 +277,10 @@ let reason (p : Params.t) ~capacity ~bump_left ~position (side : Side.t) : Unquo
 ;;
 
 (* Bids then asks, and whether the bid side is empty. *)
-let both_sides (p : Params.t) market inventory ~bump_left ~microprice ~mid =
-  let #(capacity, reservation, half_spread) = terms p market inventory ~microprice ~mid in
+let both_sides (p : Params.t) market inventory ~bump_left ~shift_bps ~microprice ~mid =
+  let #(capacity, reservation, half_spread) =
+    terms p market inventory ~shift_bps ~microprice ~mid
+  in
   let position = Inventory.position inventory in
   let asks =
     ladder
@@ -303,7 +309,7 @@ let both_sides (p : Params.t) market inventory ~bump_left ~microprice ~mid =
   #(quotes, phys_equal quotes asks, List.is_empty asks, capacity, position)
 ;;
 
-let quote ?bump_left (p : Params.t) market inventory =
+let quote ?bump_left ?(shift_bps = 0.) (p : Params.t) market inventory =
   let bump_left =
     match bump_left with
     | Some b -> b
@@ -312,18 +318,18 @@ let quote ?bump_left (p : Params.t) market inventory =
   match Market_state.microprice_or_null market, Market_state.mid_or_null market with
   | This microprice, This mid ->
     let #(quotes, _, _, _, _) =
-      both_sides p market inventory ~bump_left ~microprice ~mid
+      both_sides p market inventory ~bump_left ~shift_bps ~microprice ~mid
     in
     quotes
   | _ -> []
 ;;
 
-let quote_with_reasons ?bump_left (p : Params.t) market inventory =
+let quote_with_reasons ?bump_left ?(shift_bps = 0.) (p : Params.t) market inventory =
   let bump_left = Option.value bump_left ~default:p.bump_budget in
   match Market_state.microprice_or_null market, Market_state.mid_or_null market with
   | This microprice, This mid ->
     let #(quotes, no_bids, no_asks, capacity, position) =
-      both_sides p market inventory ~bump_left ~microprice ~mid
+      both_sides p market inventory ~bump_left ~shift_bps ~microprice ~mid
     in
     let why side = side, reason p ~capacity ~bump_left ~position side in
     ( quotes
@@ -335,8 +341,8 @@ let quote_with_reasons ?bump_left (p : Params.t) market inventory =
   | _ -> [], [ Side.Buy, Unquoted.No_book; Sell, No_book ]
 ;;
 
-let unquoted ?bump_left p market inventory =
-  snd (quote_with_reasons ?bump_left p market inventory)
+let unquoted ?bump_left ?shift_bps p market inventory =
+  snd (quote_with_reasons ?bump_left ?shift_bps p market inventory)
 ;;
 
 (* Every rung of one side for [explain], and the reason when none has a positive price. *)
@@ -360,7 +366,7 @@ let explained_side (p : Params.t) (m : Model.t) market ~bump_left ~position side
 ;;
 
 module For_testing = struct
-  let explain ?bump_left (p : Params.t) market inventory =
+  let explain ?bump_left ?(shift_bps = 0.) (p : Params.t) market inventory =
     let bump_left = Option.value bump_left ~default:p.bump_budget in
     let buf = Buffer.create 1024 in
     let line indent fmt =
@@ -381,7 +387,7 @@ module For_testing = struct
       "book bid %s ask %s"
       (opt (Market_state.best_bid market))
       (opt (Market_state.best_ask market));
-    (match model p market inventory with
+    (match model ~shift_bps p market inventory with
      | None -> line 1 "no two-sided book: nothing quoted"
      | Some m ->
        let v = p.gamma *. m.vol_bps *. m.vol_bps in
@@ -405,12 +411,23 @@ module For_testing = struct
          (Size.to_string p.lot);
        line 1 "inventory ratio q %.4f" m.inventory_ratio;
        line 1 "risk term v = gamma %.4f * vol^2 = %.4f bps" p.gamma v;
-       line
-         1
-         "reservation %s = microprice shifted by -q * (skew %.4f + v) = %.4f bps"
-         (Price.to_string m.reservation)
-         p.skew_bps
-         (-.m.inventory_ratio *. (p.skew_bps +. v));
+       if Float.equal shift_bps 0.
+       then
+         line
+           1
+           "reservation %s = microprice shifted by -q * (skew %.4f + v) = %.4f bps"
+           (Price.to_string m.reservation)
+           p.skew_bps
+           (-.m.inventory_ratio *. (p.skew_bps +. v))
+       else
+         line
+           1
+           "reservation %s = microprice shifted by -q * (skew %.4f + v) + shift %.4f = \
+            %.4f bps"
+           (Price.to_string m.reservation)
+           p.skew_bps
+           shift_bps
+           ((-.m.inventory_ratio *. (p.skew_bps +. v)) +. shift_bps);
        line
          1
          "half-spread %.4f bps = base %.4f + v / 2"

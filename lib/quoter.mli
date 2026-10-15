@@ -6,7 +6,8 @@
     - capacity [cap = min(max_position, max_notional / mid)]
     - inventory ratio [q = clamp((x - inventory_target) / cap, -1, 1)]
     - risk term [v = gamma * sigma^2] (bps)
-    - reservation price [r = m * (1 - q * (skew_bps + v) / 10_000)]
+    - reservation price [r = m * (1 + (shift_bps - q * (skew_bps + v)) / 10_000)], with
+      [shift_bps] 0 unless given (the {!Toxicity_gate}'s skew)
     - half-spread [delta = base_half_spread_bps + v / 2] (bps)
     - level [i] (from 0) at distance [d_i = delta + i * level_spacing_bps]: bid
       [floor_tick(r * (1 - d_i / 10_000))], ask [ceil_tick(r * (1 + d_i / 10_000))]
@@ -38,10 +39,21 @@ module Model : sig
 end
 
 (** The intermediate values of the formulas above, [None] without a two-sided book. *)
-val model : Params.t -> Market_state.t -> Inventory.t -> Model.t option
+val model
+  :  ?shift_bps:float
+  -> Params.t
+  -> Market_state.t
+  -> Inventory.t
+  -> Model.t option
 
 (** Bids (level order) followed by asks (level order). Empty without a two-sided book. *)
-val quote : ?bump_left:Size.t -> Params.t -> Market_state.t -> Inventory.t -> Quote.t list
+val quote
+  :  ?bump_left:Size.t
+  -> ?shift_bps:float
+  -> Params.t
+  -> Market_state.t
+  -> Inventory.t
+  -> Quote.t list
 
 (** Why a side has no quotes. *)
 module Unquoted : sig
@@ -65,6 +77,7 @@ end
 (** [quote], and a reason for each side left without quotes. *)
 val quote_with_reasons
   :  ?bump_left:Size.t
+  -> ?shift_bps:float
   -> Params.t
   -> Market_state.t
   -> Inventory.t
@@ -73,6 +86,7 @@ val quote_with_reasons
 (** Only the reasons of [quote_with_reasons]. *)
 val unquoted
   :  ?bump_left:Size.t
+  -> ?shift_bps:float
   -> Params.t
   -> Market_state.t
   -> Inventory.t
@@ -82,5 +96,11 @@ module For_testing : sig
   (** Every term of the computation above as an indented tree: book, model terms, and per
       side the room and each rung's distance, unrounded target, tick-rounded and final
       price, then the reason for a side without quotes. *)
-  val explain : ?bump_left:Size.t -> Params.t -> Market_state.t -> Inventory.t -> string
+  val explain
+    :  ?bump_left:Size.t
+    -> ?shift_bps:float
+    -> Params.t
+    -> Market_state.t
+    -> Inventory.t
+    -> string
 end
