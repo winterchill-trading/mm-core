@@ -25,6 +25,16 @@ type t =
   ; resynced_at : int option
   ; halted_at : int option
   ; bump_used : Size.t
+      (* Left out of the sexp while unused, so a strategy without a gate or guard prints
+         as before and the bisimulation against [test/ref_strategy.ml] still compares
+         states. *)
+  ; toxicity : Toxicity_gate.Signal.t option [@sexp.option]
+  ; gate : Toxicity_gate.Decision.t [@sexp_drop_if Toxicity_gate.Decision.equal Normal]
+  (** at the last tick *)
+  ; last_quoted_gate : Toxicity_gate.Decision.t
+       [@sexp_drop_if Toxicity_gate.Decision.equal Normal]
+  ; guard : Reference_guard.t option [@sexp.option]
+  (** present iff [params.reference_guard] is *)
   }
 [@@deriving sexp_of]
 
@@ -45,6 +55,10 @@ let create params =
   ; resynced_at = None
   ; halted_at = None
   ; bump_used = Size.zero
+  ; toxicity = None
+  ; gate = Normal
+  ; last_quoted_gate = Normal
+  ; guard = Option.map params.reference_guard ~f:Reference_guard.create
   }
 ;;
 
@@ -94,6 +108,71 @@ let on_account t state =
 
 let on_resync t ~now = { t with resynced_at = Some now }
 
+let on_toxicity t ~now ~signal ~imbalance =
+  { t with
+    toxicity = Some { Toxicity_gate.Signal.value = signal; imbalance; time = now }
+  }
+;;
+
+let on_reference t ~now reference =
+  match t.guard with
+  | None -> t
+  | Some guard ->
+    { t with guard = Some (Reference_guard.on_reference guard ~now reference) }
+;;
+
+(* The guard looked at the current mid; [t] itself while its status does not change. *)
+let check_guard t ~now =
+  match t.guard with
+  | None -> t
+  | Some guard ->
+    let checked =
+      Reference_guard.check guard ~now ~venue_mid:(Market_state.mid_or_null t.market)
+    in
+    if phys_equal checked guard then t else { t with guard = Some checked }
+;;
+
+(* The pull reason of the guard and the gate, if any. A reason already in [mode] is kept
+   while it holds, so the mode does not change (and get logged) on every tick. *)
+let plausibility_reason t ~now ~(gate : Toxicity_gate.Decision.t) : Risk.Reason.t or_null =
+  let guard_reason : Risk.Reason.t or_null =
+    match t.guard with
+    | None -> Null
+    | Some guard ->
+      (match Reference_guard.status guard, t.mode with
+       | Diverged _, Pulled (Reference_divergence _ as kept) -> This kept
+       | Diverged { since; divergence_bps; _ }, _ ->
+         This
+           (Reference_divergence { divergence_bps; held_ms = (now - since) / 1_000_000 })
+       | Reference_missing _, Pulled (Reference_missing _ as kept) -> This kept
+       | Reference_missing { age_ms }, _ -> This (Reference_missing { age_ms })
+       | (Unchecked | Within_band | Diverging _), _ -> Null)
+  in
+  match guard_reason with
+  | This _ -> guard_reason
+  | Null ->
+    (match gate, t.mode with
+     | Pull _, Pulled (Toxic_flow _ as kept) -> This kept
+     | Pull { signal }, _ -> This (Toxic_flow { signal })
+     | (Normal | Widen _), _ -> Null)
+;;
+
+(* Parameters and reservation shift the gate quotes with. *)
+let gated_params t =
+  match t.gate with
+  | Normal | Pull _ -> t.params, None
+  | Widen { extra_half_spread_bps; reservation_shift_bps; size_factor; intensity = _ } ->
+    let p = t.params in
+    let units =
+      Float.iround_down_exn (Float.of_int (Size.to_units p.order_size) *. size_factor)
+    in
+    ( { p with
+        base_half_spread_bps = p.base_half_spread_bps +. extra_half_spread_bps
+      ; order_size = Size.max p.lot (Fx.size_floor (Size.of_units units) ~lot:p.lot)
+      }
+    , Some reservation_shift_bps )
+;;
+
 let in_grace t ~now =
   match t.resynced_at with
   | None -> false
@@ -116,6 +195,7 @@ let interval_elapsed t ~now =
 let should_requote t ~now ~was_running =
   (not was_running)
   || interval_elapsed t ~now
+  || (not (Toxicity_gate.Decision.equal t.gate t.last_quoted_gate))
   || (match t.last_quoted_position with
       | None -> true
       | Some p -> not (Size.equal p (Inventory.position t.inventory)))
@@ -187,6 +267,13 @@ let tick_u t ~now =
         }
       else t
     in
+    let t = check_guard t ~now in
+    let gate =
+      match t.params.toxicity_gate with
+      | None -> Toxicity_gate.Decision.Normal
+      | Some config -> Toxicity_gate.decide config ~now t.toxicity
+    in
+    let t = if Toxicity_gate.Decision.equal gate t.gate then t else { t with gate } in
     let was_running = Mode.equal t.mode Running in
     let mode : Mode.t =
       match t.mode with
@@ -204,7 +291,10 @@ let tick_u t ~now =
              t.market
              t.inventory
          with
-         | Ok -> Running
+         | Ok ->
+           (match plausibility_reason t ~now ~gate:t.gate with
+            | Null -> Running
+            | This reason -> Pulled reason)
          | Halt reason when Risk.Reason.is_sticky reason -> Halted reason
          | Halt reason -> Pulled reason)
     in
@@ -244,7 +334,8 @@ let tick_u t ~now =
        then #(t, [])
        else (
          let bump_left = Size.(max zero (t.params.bump_budget - t.bump_used)) in
-         let desired = Quoter.quote ~bump_left t.params t.market t.inventory in
+         let params, shift_bps = gated_params t in
+         let desired = Quoter.quote ~bump_left ?shift_bps params t.market t.inventory in
          let plan =
            Reconciler.reconcile
              t.params
@@ -266,6 +357,7 @@ let tick_u t ~now =
              last_plan_at = Some now
            ; last_quoted_mid = Market_state.mid t.market
            ; last_quoted_position = Some (Inventory.position t.inventory)
+           ; last_quoted_gate = t.gate
            }
          in
          let t, plan = emit t ~now plan in
@@ -292,7 +384,13 @@ let update_params t (params : Params.t) =
       then t.market
       else Market_state.with_vol_window t.market ~vol_window:params.vol_window
     in
-    Ok { t with params; market; last_plan_at = None })
+    let guard =
+      match params.reference_guard, t.guard with
+      | None, _ -> None
+      | Some config, Some guard -> Some (Reference_guard.with_config guard config)
+      | Some config, None -> Some (Reference_guard.create config)
+    in
+    Ok { t with params; market; guard; last_plan_at = None })
 ;;
 
 let params t = t.params
@@ -303,3 +401,31 @@ let open_orders t = t.open_orders
 let generation t = t.generation
 let peak_pnl t = t.peak_pnl
 let bump_used t = t.bump_used
+let toxicity_decision t = t.gate
+let reference_guard t = t.guard
+
+module Event = struct
+  type t =
+    | Reference of Reference_guard.Event.t
+    | Toxicity of Toxicity_gate.Event.t
+  [@@deriving sexp, compare, equal]
+end
+
+let events_between ~before ~after ~now =
+  let reference =
+    match before.guard, after.guard with
+    | Some b, Some a ->
+      List.map (Reference_guard.events_between ~before:b ~after:a ~now) ~f:(fun e ->
+        Event.Reference e)
+    | _ -> []
+  in
+  let signal = Option.value_map after.toxicity ~default:Float.nan ~f:(fun s -> s.value) in
+  match Toxicity_gate.Event.of_change ~before:before.gate ~after:after.gate ~signal with
+  | None -> reference
+  | Some e -> reference @ [ Toxicity e ]
+;;
+
+let tick_with_events t ~now =
+  let after, plan = tick t ~now in
+  after, plan, events_between ~before:t ~after ~now
+;;

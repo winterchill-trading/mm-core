@@ -17,9 +17,17 @@
       halt clears that long after it tripped, the action history is forgotten and the
       checks run again. Missing or stale data ([Pulled]) cancels all resting orders until
       fresh data arrives.
+    + When the risk checks pass, the plausibility checks run: with
+      [params.reference_guard], a venue mid outside the reference band past its grace
+      period (or no fresh reference, when so configured) pulls quotes
+      ([Pulled (Reference_divergence _ | Reference_missing _)]); with
+      [params.toxicity_gate], a signal at its pull threshold pulls them
+      ([Pulled (Toxic_flow _)]). A pull reason already in the mode is kept while it holds.
     + [Running] requotes when the last plan is older than [requote_interval_ms], the mid
-      moved at least [requote_threshold_bps] since then, the position changed, or the mode
-      just became [Running]. The plan is [Reconciler.reconcile] of [Quoter.quote].
+      moved at least [requote_threshold_bps] since then, the position changed, the
+      toxicity gate's decision changed, or the mode just became [Running]. The plan is
+      [Reconciler.reconcile] of [Quoter.quote], with the gate's wider half-spread, smaller
+      size and reservation shift while it widens.
 
     A returned plan is non-empty only when it contains a [Cancel] or [Place]; it then also
     lists the [Keep]s. Cancelled orders are dropped from the local open orders right away;
@@ -63,6 +71,15 @@ val on_account : t -> Account_view.t -> t
     kill switch. *)
 val on_resync : t -> now:int -> t
 
+(** A toxicity measurement at [now] for the {!Toxicity_gate} ([params.toxicity_gate]):
+    [signal] (typically a VPIN percentile in [[0, 1]]) and the signed flow [imbalance] in
+    [[-1, 1]]. Only the latest one counts. Without a gate it is kept but unused. *)
+val on_toxicity : t -> now:int -> signal:float -> imbalance:float -> t
+
+(** A reference mid at [now] for the {!Reference_guard} ([params.reference_guard]);
+    ignored without one. *)
+val on_reference : t -> now:int -> Price.t -> t
+
 val tick : t -> now:int -> t * Action.t list
 
 (** [tick] returning an unboxed pair. A tick that sends nothing and changes no field
@@ -92,3 +109,25 @@ val peak_pnl : t -> Usd.t
     (each fill counts only the part beyond both the soft limit and the position before
     it). The quoter gets [bump_budget - bump_used] as its [bump_left]. *)
 val bump_used : t -> Size.t
+
+(** The toxicity gate's decision at the last tick ([Normal] without a gate). *)
+val toxicity_decision : t -> Toxicity_gate.Decision.t
+
+(** [None] without [params.reference_guard]. *)
+val reference_guard : t -> Reference_guard.t option
+
+(** What the plausibility checks report. *)
+module Event : sig
+  type t =
+    | Reference of Reference_guard.Event.t
+    | Toxicity of Toxicity_gate.Event.t
+  [@@deriving sexp, compare, equal]
+end
+
+(** The events between two states of one strategy (a tick, or an [on_reference] whose
+    reference jumped): the guard's ({!Reference_guard.events_between}), then a change of
+    the gate's decision kind. *)
+val events_between : before:t -> after:t -> now:int -> Event.t list
+
+(** [tick] and the events between its argument and its result. *)
+val tick_with_events : t -> now:int -> t * Action.t list * Event.t list
