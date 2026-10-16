@@ -119,3 +119,26 @@ let%expect_test "minor words per Risk.check_or_null" =
     (check (This 3));
   [%expect {| unchecked rate: 0 words, checked rate: 0 words |}]
 ;;
+
+(* Zero on both platforms: the guard returns itself while the mid stays inside the band,
+   and the gate's [Normal] decision is a constant. *)
+let%expect_test "an idle tick with a reference guard and a toxicity gate" =
+  let params =
+    { Params.btc with
+      reference_guard = Some Reference_guard.Config.default
+    ; toxicity_gate = Some Toxicity_gate.Config.default
+    }
+  in
+  let s = Strategy.update_params (quoted ()) params |> ok_exn in
+  let s = Strategy.on_reference s ~now:0 (Exchange_core.Price.of_int 100_001) in
+  let s = Strategy.on_toxicity s ~now:0 ~signal:0.3 ~imbalance:0. in
+  let #(s, _) = Strategy.tick_u s ~now:(ms 1) in
+  printf
+    "%d words, same state %b\n"
+    (words_per_call (fun () ->
+       let #(s, _) = Strategy.tick_u s ~now:(ms 1) in
+       s))
+    (let #(s', _) = Strategy.tick_u s ~now:(ms 1) in
+     phys_equal s s');
+  [%expect {| 0 words, same state true |}]
+;;
