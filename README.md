@@ -49,7 +49,9 @@ All modules live under `Mm_core`.
 | `Action` | `Keep oid \| Cancel oid \| Place Order_request.t` |
 | `Reconciler` | Minimal plan from resting orders to the desired ladder; deterministic client order ids |
 | `Risk` | Kill switch (`Ok \| Halt reason`), the one second `Action_rate` window and the flatten plan |
-| `Strategy` | State machine: `on_book`, `on_fill`, `on_open_orders`, `on_account`, `on_resync`, `tick ~now`, `update_params` |
+| `Toxicity_gate` | Pure decision from a toxicity signal: quote normally, widen (wider half-spread, reservation shift towards the flow, smaller size) or pull |
+| `Reference_guard` | Plausibility check: pull when the venue mid stays outside a band around a reference mid past a grace period, or at once after a reference jump; typed events |
+| `Strategy` | State machine: `on_book`, `on_fill`, `on_open_orders`, `on_account`, `on_resync`, `on_reference`, `on_toxicity`, `tick ~now`, `tick_with_events`, `update_params` |
 | `Venue` | `module type S`: the Async venue client the live loop runs on |
 | `Latency_histogram` | Latency histogram at two significant digits: count, p50, p99, exact max |
 | `Live` | `Make (V : Venue.S)`: feeds, polls, plan execution, shutdown; hot `update_params`; the run `Report`; tick-to-order latency; `stop_signal` (SIGINT/SIGTERM) |
@@ -344,6 +346,42 @@ it:
 - `action_rate_cooldown_ms` (default none): when set, a `Max_action_rate` halt clears
   this long after it tripped, the window is emptied and the strategy quotes again if the
   other checks pass. Position and drawdown halts stay permanent.
+
+### Plausibility: reference guard and toxicity gate
+
+Both are optional parameters, absent (and absent from a params sexp) by default; when
+set they run after the risk checks pass and only ever pull quotes (`Pulled`, never
+`Halted`).
+
+`reference_guard` (`Reference_guard.Config`: `band_bps` 50, `grace_ms` 2s,
+`max_jump_bps` none, `max_reference_age_ms` 30s, `stale_reference` `Pull`). The caller
+feeds an independent reference mid (another venue, an index, a price-anchor mark) with
+`Strategy.on_reference` or `Live.on_reference`. When the venue mid has been more than
+`band_bps` from it for `grace_ms`, the strategy cancels everything
+(`Pulled (Reference_divergence _)`) until the mid is back inside the band. A reference
+update that jumps more than `max_jump_bps` skips the grace period. Without a fresh
+reference, `Pull` pulls (`Reference_missing`) and `Ignore` quotes on. This is a check on
+data that is fresh but wrong, next to the age check on data that stopped.
+
+`toxicity_gate` (`Toxicity_gate.Config`: widen from 0.8, pull at 0.95, up to 5 bps more
+half-spread, 2 bps of skew, sizes cut by up to half, signals valid 60s). The caller
+feeds a signal in `[0, 1]` and the signed flow imbalance with `Strategy.on_toxicity` or
+`Live.on_toxicity`; between the thresholds the quotes widen, move towards the side the
+flow comes from (up when takers buy) and shrink, linearly in the signal; at `pull_at`
+they are pulled (`Pulled (Toxic_flow _)`). A stale signal counts as none. mm-core does
+not depend on market-data: the `mm-core-replay` package's `Toxicity_input` turns
+market-data's VPIN buckets (`Market_data.Toxicity`, the percentile of VPIN against its own
+history) into the signal, and `replay/test/test_toxicity_input.ml` runs a quiet market
+then a run of buys through both. The percentile relaxes under one-sided flow that lasts
+(VPIN stays at 1 and becomes the norm); a sustained toxic regime needs a threshold on VPIN
+itself.
+
+`Strategy.events_between ~before ~after ~now` (and `tick_with_events`) reports
+`Reference (Diverged | Reference_jumped | Reference_missing | Resumed)` and
+`Toxicity (Widening | Pulled | Cleared)`; `Live.on_strategy_event` registers a hook and
+the loop logs each one. With neither configured nothing is computed and an idle tick still
+allocates nothing (pinned with both configured too: 0 words, 79 ns against 67 ns without,
+dev profile).
 
 ### Strategy loop
 
