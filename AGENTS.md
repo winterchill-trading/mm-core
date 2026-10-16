@@ -10,9 +10,9 @@ implements it. Nothing here talks to a venue; `market-maker` and the venue adapt
 
 | Path | Holds |
 | --- | --- |
-| `lib/` | Library `mm-core` (module `Mm_core`): `Params`, `Market_state`, `Inventory`, `Quoter`, `Reconciler`, `Risk`, `Strategy`, `Venue`, `Live` |
+| `lib/` | Library `mm-core` (module `Mm_core`): `Params`, `Market_state`, `Inventory`, `Quoter`, `Reconciler`, `Risk`, `Toxicity_gate`, `Reference_guard`, `Strategy`, `Venue`, `Live` |
 | `bin/` | The `mm-core` binary, package `mm-core-replay`: `replay -norm DIR -symbol S` prints the plans |
-| `replay/` | The replay library and its test, used by the binary |
+| `replay/` | The replay library (and `Toxicity_input`, market-data's VPIN as the toxicity gate's signal) and its tests, used by the binary |
 | `bench/` | core_bench cases for `quote` and `reconcile` |
 | `test/` | Expect and Base_quickcheck tests, bisimulation against the reference modules in `ref_*.ml`, live-loop tests over an in-memory venue, the stepped harness |
 | `.github/` | CI workflow |
@@ -42,6 +42,12 @@ the published dependencies, then run `dune build` here.
   tolerance or zero, with a comment saying which.
 - Parameters are validated by `Params.validate`, which names every field and rejects NaN and infinity.
   A new parameter defaults when absent from a sexp file.
+- `Toxicity_gate` and `Reference_guard` only pull (`Pulled`), never halt, and run after the risk
+  checks. New strategy fields are left out of its sexp while unused (`[@sexp.option]`,
+  `[@sexp_drop_if]`), so the bisimulation against `test/ref_strategy.ml` keeps comparing states;
+  keep that for any field the reference does not have.
+- mm-core itself must not depend on market-data; code that needs it goes in `replay/`
+  (package `mm-core-replay`).
 - Comments for humans at pinned numbers, tolerances and the ladder-reconciliation fix.
 
 ## Dependencies
@@ -65,6 +71,10 @@ The `obj-magic` job calls the reusable workflow in `winterchill-trading/infra`. 
   property test caught it.
 - Venue calls have no timeout here. A venue that never answers blocks the loop and `stop`.
 - One symbol per `Live.Make` run.
+- The toxicity gate's default thresholds are for a percentile signal. The percentile relaxes under
+  one-sided flow that lasts; a sustained regime needs a threshold on VPIN itself.
+- `Live.stop` on a synthetic time source waits on its timers: advance the clock after calling it, or
+  the test hangs.
 - The position is not flattened on exit; `stop` only cancels resting orders.
 
 ## Where to read more
