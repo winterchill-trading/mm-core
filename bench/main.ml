@@ -79,6 +79,25 @@ let quoted =
   Strategy.on_open_orders s resting
 ;;
 
+(* The same quoted strategy with a reference guard and a toxicity gate in the parameters,
+   a reference at the mid and a quiet signal: what the plausibility checks add to an idle
+   tick. *)
+let guarded =
+  let p =
+    { params with
+      reference_guard = Some Reference_guard.Config.default
+    ; toxicity_gate = Some Toxicity_gate.Config.default
+    }
+  in
+  let s = Strategy.update_params quoted p |> ok_exn in
+  let s = Strategy.on_reference s ~now:0 (Price.of_int 100_001) in
+  let s = Strategy.on_toxicity s ~now:0 ~signal:0.3 ~imbalance:0. in
+  let #(s, _) = Strategy.tick_u s ~now:1 in
+  s
+;;
+
+let widening = Some { Toxicity_gate.Signal.value = 0.9; imbalance = 0.5; time = 0 }
+
 let () =
   Command_unix.run
     (Bench.make_command
@@ -103,6 +122,13 @@ let () =
        ; Bench.Test.create ~name:"strategy tick_u (no change)" (fun () ->
            let #(s, _) = Strategy.tick_u quoted ~now:1 in
            ignore (s : Strategy.t))
+       ; Bench.Test.create ~name:"strategy tick_u (no change, guard + gate)" (fun () ->
+           let #(s, _) = Strategy.tick_u guarded ~now:2 in
+           ignore (s : Strategy.t))
+       ; Bench.Test.create ~name:"toxicity gate decide (widen)" (fun () ->
+           ignore
+             (Toxicity_gate.decide Toxicity_gate.Config.default ~now:1 widening
+              : Toxicity_gate.Decision.t))
        ; Bench.Test.create ~name:"strategy on_book+tick (requote)" (fun () ->
            ignore
              (Strategy.tick (Strategy.on_book quoted next_book) ~now:10_000_000_000
