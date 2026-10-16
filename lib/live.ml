@@ -162,6 +162,7 @@ module Make (V : Venue.S) = struct
     ; mutable orders_cancelled : int
     ; mutable reconnects : int
     ; mutable resync_hooks : (unit -> unit) list
+    ; mutable event_hooks : (Strategy.Event.t -> unit) list
     }
 
   let params t = t.config.params
@@ -294,15 +295,31 @@ module Make (V : Venue.S) = struct
 
   (* {2 Steps} *)
 
+  (* Logs the plausibility events between two strategy states and hands them to the hooks.
+     Skipped without a gate or guard, so the hot path stays as it was. *)
+  let report_events t ~before ~after =
+    let p = Strategy.params after in
+    if Option.is_some p.toxicity_gate || Option.is_some p.reference_guard
+    then (
+      match Strategy.events_between ~before ~after ~now:(now_ns t) with
+      | [] -> ()
+      | events ->
+        List.iter events ~f:(fun event ->
+          Log.Global.info_s [%message "plausibility" (event : Strategy.Event.t)];
+          List.iter (List.rev t.event_hooks) ~f:(fun f -> f event)))
+  ;;
+
   let tick_and_execute t =
     if t.stopping
     then return ()
     else (
       let book_at = t.book_waiting_since in
       t.book_waiting_since <- None;
-      let mode_before = Strategy.mode t.strategy in
-      let #(strategy, plan) = Strategy.tick_u t.strategy ~now:(now_ns t) in
+      let before = t.strategy in
+      let mode_before = Strategy.mode before in
+      let #(strategy, plan) = Strategy.tick_u before ~now:(now_ns t) in
       t.strategy <- strategy;
+      report_events t ~before ~after:strategy;
       let mode = Strategy.mode strategy in
       if not (Strategy.Mode.equal mode mode_before)
       then
@@ -371,6 +388,24 @@ module Make (V : Venue.S) = struct
     t.strategy <- Strategy.on_book t.strategy book;
     step t
   ;;
+
+  let on_reference t price =
+    if not t.stopping
+    then (
+      let before = t.strategy in
+      t.strategy <- Strategy.on_reference before ~now:(now_ns t) price;
+      report_events t ~before ~after:t.strategy;
+      step t)
+  ;;
+
+  let on_toxicity t ~signal ~imbalance =
+    if not t.stopping
+    then (
+      t.strategy <- Strategy.on_toxicity t.strategy ~now:(now_ns t) ~signal ~imbalance;
+      step t)
+  ;;
+
+  let on_strategy_event t ~f = t.event_hooks <- f :: t.event_hooks
 
   let on_order_update t (u : Order_update.t) =
     Log.Global.debug_s [%message "order update" (u : Order_update.t)];
@@ -484,6 +519,7 @@ module Make (V : Venue.S) = struct
         ; orders_cancelled = 0
         ; reconnects = 0
         ; resync_hooks = []
+        ; event_hooks = []
         }
       in
       Log.Global.info_s [%message "starting" (params : Params.t)];

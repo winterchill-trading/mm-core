@@ -112,6 +112,21 @@ module Make (V : Venue.S) : sig
       starts the same grace period at the same time. *)
   val on_resync : t -> f:(unit -> unit) -> unit
 
+  (** Gives the strategy a reference mid ({!Strategy.on_reference}, for
+      [params.reference_guard]) at the time source's now, and ticks. A reference jump is
+      reported as an event at once. Ignored once the loop is stopping. *)
+  val on_reference : t -> Price.t -> unit
+
+  (** Gives the strategy a toxicity measurement ({!Strategy.on_toxicity}, for
+      [params.toxicity_gate]) at the time source's now, and ticks. *)
+  val on_toxicity : t -> signal:float -> imbalance:float -> unit
+
+  (** Registers [f], called with every plausibility event ({!Strategy.Event.t}: the
+      reference guard diverging, resuming, losing its reference or seeing a jump; the
+      toxicity gate widening, pulling or clearing), in registration order. Each event is
+      also logged. Nothing is computed without a gate or guard in the parameters. *)
+  val on_strategy_event : t -> f:(Strategy.Event.t -> unit) -> unit
+
   (** Tick-to-order latency: from the arrival of a book update (on the time source) to the
       moment the plan it led to is sent, for every plan sent after a book update. The
       clock starts at the first book since the previous tick, so time spent waiting for
